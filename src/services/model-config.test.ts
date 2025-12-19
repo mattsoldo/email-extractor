@@ -10,6 +10,8 @@ import {
   formatCost,
   isModelAvailable,
   getAvailableModels,
+  isProviderConfigured,
+  getConfiguredProviders,
 } from "./model-config";
 
 describe("model-config", () => {
@@ -18,10 +20,11 @@ describe("model-config", () => {
       expect(AVAILABLE_MODELS.length).toBeGreaterThan(0);
     });
 
-    it("should have models from both providers", () => {
+    it("should have models from all three providers", () => {
       const providers = new Set(AVAILABLE_MODELS.map((m) => m.provider));
       expect(providers.has("anthropic")).toBe(true);
       expect(providers.has("openai")).toBe(true);
+      expect(providers.has("google")).toBe(true);
     });
 
     it("should have exactly one recommended model", () => {
@@ -35,6 +38,24 @@ describe("model-config", () => {
         expect(model.outputCostPerMillion).toBeGreaterThan(0);
         expect(model.contextWindow).toBeGreaterThan(0);
       }
+    });
+
+    it("should have Claude 4.5 series models", () => {
+      const claudeModels = getModelsByProvider("anthropic");
+      const claude45 = claudeModels.filter((m) => m.name.includes("4.5"));
+      expect(claude45.length).toBeGreaterThan(0);
+    });
+
+    it("should have GPT-5 series models", () => {
+      const openaiModels = getModelsByProvider("openai");
+      const gpt5 = openaiModels.filter((m) => m.id.includes("gpt-5"));
+      expect(gpt5.length).toBeGreaterThan(0);
+    });
+
+    it("should have Gemini models", () => {
+      const googleModels = getModelsByProvider("google");
+      const gemini = googleModels.filter((m) => m.id.includes("gemini"));
+      expect(gemini.length).toBeGreaterThan(0);
     });
   });
 
@@ -51,10 +72,22 @@ describe("model-config", () => {
   });
 
   describe("getModelConfig", () => {
-    it("should return model config for valid ID", () => {
-      const model = getModelConfig("claude-sonnet-4-20250514");
+    it("should return model config for valid Claude ID", () => {
+      const model = getModelConfig("claude-sonnet-4-5-20241022");
       expect(model).toBeDefined();
-      expect(model?.name).toBe("Claude Sonnet 4");
+      expect(model?.name).toBe("Claude Sonnet 4.5");
+    });
+
+    it("should return model config for valid GPT ID", () => {
+      const model = getModelConfig("gpt-5");
+      expect(model).toBeDefined();
+      expect(model?.name).toBe("GPT-5");
+    });
+
+    it("should return model config for valid Gemini ID", () => {
+      const model = getModelConfig("gemini-2.0-flash");
+      expect(model).toBeDefined();
+      expect(model?.name).toBe("Gemini 2.0 Flash");
     });
 
     it("should return undefined for invalid ID", () => {
@@ -76,9 +109,17 @@ describe("model-config", () => {
 
     it("should use valid OpenAI model ID format", () => {
       const openaiModels = getModelsByProvider("openai");
-      // OpenAI model IDs should start with gpt-
+      // OpenAI model IDs should start with gpt- or o1
       for (const model of openaiModels) {
-        expect(model.id).toMatch(/^gpt-/);
+        expect(model.id).toMatch(/^(gpt-|o1)/);
+      }
+    });
+
+    it("should use valid Google model ID format", () => {
+      const googleModels = getModelsByProvider("google");
+      // Google model IDs should start with gemini-
+      for (const model of googleModels) {
+        expect(model.id).toMatch(/^gemini-/);
       }
     });
   });
@@ -94,6 +135,12 @@ describe("model-config", () => {
       const models = getModelsByProvider("openai");
       expect(models.length).toBeGreaterThan(0);
       expect(models.every((m) => m.provider === "openai")).toBe(true);
+    });
+
+    it("should return only Google models", () => {
+      const models = getModelsByProvider("google");
+      expect(models.length).toBeGreaterThan(0);
+      expect(models.every((m) => m.provider === "google")).toBe(true);
     });
   });
 
@@ -126,12 +173,21 @@ describe("model-config", () => {
   });
 
   describe("estimateEmailCost", () => {
-    it("should calculate cost for valid model", () => {
+    it("should calculate cost for valid Claude model", () => {
       const emailContent = "This is a test email with some content about dividends.";
-      const result = estimateEmailCost(emailContent, "claude-sonnet-4-20250514");
+      const result = estimateEmailCost(emailContent, "claude-sonnet-4-5-20241022");
 
       expect(result.inputTokens).toBeGreaterThan(500); // Content + 500 overhead
       expect(result.outputTokens).toBe(400); // Fixed estimate
+      expect(result.estimatedCost).toBeGreaterThan(0);
+    });
+
+    it("should calculate cost for valid Gemini model", () => {
+      const emailContent = "This is a test email with some content about dividends.";
+      const result = estimateEmailCost(emailContent, "gemini-2.0-flash");
+
+      expect(result.inputTokens).toBeGreaterThan(500);
+      expect(result.outputTokens).toBe(400);
       expect(result.estimatedCost).toBeGreaterThan(0);
     });
 
@@ -140,18 +196,27 @@ describe("model-config", () => {
     });
 
     it("should include prompt overhead in tokens", () => {
-      const result1 = estimateEmailCost("", "claude-sonnet-4-20250514");
+      const result1 = estimateEmailCost("", "claude-sonnet-4-5-20241022");
       expect(result1.inputTokens).toBe(500); // Just the overhead
     });
 
     it("should cost more for expensive models", () => {
       const email = "Test email content for cost comparison";
 
-      // GPT-4o is more expensive than GPT-4o-mini
-      const expensiveCost = estimateEmailCost(email, "gpt-4o");
-      const cheapCost = estimateEmailCost(email, "gpt-4o-mini");
+      // Opus is more expensive than Haiku
+      const expensiveCost = estimateEmailCost(email, "claude-opus-4-5-20251101");
+      const cheapCost = estimateEmailCost(email, "claude-haiku-4-5-20241022");
 
       expect(expensiveCost.estimatedCost).toBeGreaterThan(cheapCost.estimatedCost);
+    });
+
+    it("should show Gemini Flash as cheapest option", () => {
+      const email = "Test email content for cost comparison";
+
+      const geminiFashCost = estimateEmailCost(email, "gemini-2.0-flash");
+      const claudeHaikuCost = estimateEmailCost(email, "claude-haiku-4-5-20241022");
+
+      expect(geminiFashCost.estimatedCost).toBeLessThan(claudeHaikuCost.estimatedCost);
     });
   });
 
@@ -163,7 +228,7 @@ describe("model-config", () => {
     ];
 
     it("should calculate total cost for batch", () => {
-      const result = estimateBatchCost(testEmails, "claude-sonnet-4-20250514");
+      const result = estimateBatchCost(testEmails, "claude-sonnet-4-5-20241022");
 
       expect(result.totalEmails).toBe(3);
       expect(result.totalInputTokens).toBeGreaterThan(0);
@@ -173,7 +238,7 @@ describe("model-config", () => {
     });
 
     it("should handle empty batch", () => {
-      const result = estimateBatchCost([], "claude-sonnet-4-20250514");
+      const result = estimateBatchCost([], "claude-sonnet-4-5-20241022");
 
       expect(result.totalEmails).toBe(0);
       expect(result.estimatedCost).toBe(0);
@@ -190,14 +255,14 @@ describe("model-config", () => {
         { bodyText: null, bodyHtml: "<div>More HTML</div>" },
       ];
 
-      const result = estimateBatchCost(emailsWithHtml, "claude-sonnet-4-20250514");
+      const result = estimateBatchCost(emailsWithHtml, "claude-sonnet-4-5-20241022");
       expect(result.totalInputTokens).toBeGreaterThan(1000); // Overhead for 2 emails
     });
 
     it("should handle emails with no content", () => {
       const emptyEmails = [{ bodyText: null, bodyHtml: null }, {}];
 
-      const result = estimateBatchCost(emptyEmails, "claude-sonnet-4-20250514");
+      const result = estimateBatchCost(emptyEmails, "claude-sonnet-4-5-20241022");
       expect(result.totalInputTokens).toBe(1000); // Just overhead (500 * 2)
     });
   });
@@ -220,6 +285,49 @@ describe("model-config", () => {
     });
   });
 
+  describe("isProviderConfigured", () => {
+    const originalEnv = process.env;
+
+    beforeEach(() => {
+      process.env = { ...originalEnv };
+    });
+
+    afterEach(() => {
+      process.env = originalEnv;
+    });
+
+    it("should return true for Anthropic when API key is set", () => {
+      process.env.ANTHROPIC_API_KEY = "test-key";
+      expect(isProviderConfigured("anthropic")).toBe(true);
+    });
+
+    it("should return true for OpenAI when API key is set", () => {
+      process.env.OPENAI_API_KEY = "test-key";
+      expect(isProviderConfigured("openai")).toBe(true);
+    });
+
+    it("should return true for Google when GOOGLE_API_KEY is set", () => {
+      process.env.GOOGLE_API_KEY = "test-key";
+      expect(isProviderConfigured("google")).toBe(true);
+    });
+
+    it("should return true for Google when GEMINI_API_KEY is set", () => {
+      delete process.env.GOOGLE_API_KEY;
+      process.env.GEMINI_API_KEY = "test-key";
+      expect(isProviderConfigured("google")).toBe(true);
+    });
+
+    it("should return false when no API key is set", () => {
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.GOOGLE_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      expect(isProviderConfigured("anthropic")).toBe(false);
+      expect(isProviderConfigured("openai")).toBe(false);
+      expect(isProviderConfigured("google")).toBe(false);
+    });
+  });
+
   describe("isModelAvailable", () => {
     const originalEnv = process.env;
 
@@ -237,22 +345,33 @@ describe("model-config", () => {
 
     it("should return true for Anthropic model when API key is set", () => {
       process.env.ANTHROPIC_API_KEY = "test-key";
-      expect(isModelAvailable("claude-sonnet-4-20250514")).toBe(true);
+      expect(isModelAvailable("claude-sonnet-4-5-20241022")).toBe(true);
     });
 
     it("should return false for Anthropic model when API key is not set", () => {
       delete process.env.ANTHROPIC_API_KEY;
-      expect(isModelAvailable("claude-sonnet-4-20250514")).toBe(false);
+      expect(isModelAvailable("claude-sonnet-4-5-20241022")).toBe(false);
     });
 
     it("should return true for OpenAI model when API key is set", () => {
       process.env.OPENAI_API_KEY = "test-key";
-      expect(isModelAvailable("gpt-4o")).toBe(true);
+      expect(isModelAvailable("gpt-5")).toBe(true);
     });
 
     it("should return false for OpenAI model when API key is not set", () => {
       delete process.env.OPENAI_API_KEY;
-      expect(isModelAvailable("gpt-4o")).toBe(false);
+      expect(isModelAvailable("gpt-5")).toBe(false);
+    });
+
+    it("should return true for Google model when API key is set", () => {
+      process.env.GOOGLE_API_KEY = "test-key";
+      expect(isModelAvailable("gemini-2.0-flash")).toBe(true);
+    });
+
+    it("should return false for Google model when API key is not set", () => {
+      delete process.env.GOOGLE_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      expect(isModelAvailable("gemini-2.0-flash")).toBe(false);
     });
   });
 
@@ -270,27 +389,68 @@ describe("model-config", () => {
     it("should return only models with configured API keys", () => {
       process.env.ANTHROPIC_API_KEY = "test-key";
       delete process.env.OPENAI_API_KEY;
+      delete process.env.GOOGLE_API_KEY;
+      delete process.env.GEMINI_API_KEY;
 
       const available = getAvailableModels();
       expect(available.every((m) => m.provider === "anthropic")).toBe(true);
     });
 
-    it("should return models from both providers when both keys are set", () => {
+    it("should return models from all providers when all keys are set", () => {
       process.env.ANTHROPIC_API_KEY = "test-key";
       process.env.OPENAI_API_KEY = "test-key";
+      process.env.GOOGLE_API_KEY = "test-key";
 
       const available = getAvailableModels();
       const providers = new Set(available.map((m) => m.provider));
       expect(providers.has("anthropic")).toBe(true);
       expect(providers.has("openai")).toBe(true);
+      expect(providers.has("google")).toBe(true);
     });
 
     it("should return empty array when no API keys are set", () => {
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.OPENAI_API_KEY;
+      delete process.env.GOOGLE_API_KEY;
+      delete process.env.GEMINI_API_KEY;
 
       const available = getAvailableModels();
       expect(available).toEqual([]);
+    });
+  });
+
+  describe("getConfiguredProviders", () => {
+    const originalEnv = process.env;
+
+    beforeEach(() => {
+      process.env = { ...originalEnv };
+    });
+
+    afterEach(() => {
+      process.env = originalEnv;
+    });
+
+    it("should return only configured providers", () => {
+      process.env.ANTHROPIC_API_KEY = "test-key";
+      process.env.GOOGLE_API_KEY = "test-key";
+      delete process.env.OPENAI_API_KEY;
+
+      const providers = getConfiguredProviders();
+      expect(providers).toContain("anthropic");
+      expect(providers).toContain("google");
+      expect(providers).not.toContain("openai");
+    });
+
+    it("should return all providers when all are configured", () => {
+      process.env.ANTHROPIC_API_KEY = "test-key";
+      process.env.OPENAI_API_KEY = "test-key";
+      process.env.GOOGLE_API_KEY = "test-key";
+
+      const providers = getConfiguredProviders();
+      expect(providers).toHaveLength(3);
+      expect(providers).toContain("anthropic");
+      expect(providers).toContain("openai");
+      expect(providers).toContain("google");
     });
   });
 });

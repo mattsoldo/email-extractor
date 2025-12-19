@@ -306,10 +306,11 @@ export default function DashboardPage() {
               Select an email set and AI model to extract transactions
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="flex flex-wrap items-end gap-4">
+          <CardContent className="space-y-4">
+            {/* Selectors Row */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Set Selector */}
-              <div className="flex-1 min-w-[200px] max-w-xs space-y-2">
+              <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-700 flex items-center gap-1">
                   <FolderOpen className="h-4 w-4" />
                   Email Set
@@ -340,7 +341,7 @@ export default function DashboardPage() {
               </div>
 
               {/* Model Selector */}
-              <div className="flex-1 min-w-[250px] max-w-md space-y-2">
+              <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-700">AI Model</label>
                 <Select value={selectedModelId} onValueChange={setSelectedModelId}>
                   <SelectTrigger>
@@ -349,7 +350,7 @@ export default function DashboardPage() {
                   <SelectContent>
                     {/* Anthropic Models */}
                     <div className="px-2 py-1 text-xs font-semibold text-gray-500 bg-gray-50">
-                      Anthropic
+                      Anthropic (Claude)
                     </div>
                     {models
                       .filter((m) => m.provider === "anthropic")
@@ -372,10 +373,30 @@ export default function DashboardPage() {
                       ))}
                     {/* OpenAI Models */}
                     <div className="px-2 py-1 text-xs font-semibold text-gray-500 bg-gray-50 mt-1">
-                      OpenAI
+                      OpenAI (GPT)
                     </div>
                     {models
                       .filter((m) => m.provider === "openai")
+                      .map((model) => (
+                        <SelectItem
+                          key={model.id}
+                          value={model.id}
+                          disabled={!model.available}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span>{model.name}</span>
+                            {!model.available && (
+                              <Badge variant="outline" className="text-xs text-orange-600">No API key</Badge>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    {/* Google Models */}
+                    <div className="px-2 py-1 text-xs font-semibold text-gray-500 bg-gray-50 mt-1">
+                      Google (Gemini)
+                    </div>
+                    {models
+                      .filter((m) => m.provider === "google")
                       .map((model) => (
                         <SelectItem
                           key={model.id}
@@ -399,41 +420,10 @@ export default function DashboardPage() {
                   </p>
                 )}
               </div>
+            </div>
 
-              {/* Eligibility Status */}
-              {checkingEligibility && (
-                <div className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                  <Loader2 className="h-5 w-5 text-gray-500 animate-spin" />
-                  <span className="text-sm text-gray-600">Checking eligibility...</span>
-                </div>
-              )}
-
-              {!checkingEligibility && eligibility && !eligibility.eligible && (
-                <div className="flex items-center gap-2 p-3 bg-amber-50 rounded-lg border border-amber-200">
-                  <Ban className="h-5 w-5 text-amber-600" />
-                  <div className="text-sm">
-                    <div className="font-medium text-amber-800">Already Extracted</div>
-                    <div className="text-xs text-amber-600">
-                      {eligibility.message}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {!checkingEligibility && eligibility?.eligible && costEstimates[selectedModelId] && (
-                <div className="flex items-center gap-2 p-3 bg-green-50 rounded-lg border border-green-200">
-                  <DollarSign className="h-5 w-5 text-green-600" />
-                  <div className="text-sm">
-                    <div className="font-medium text-green-800">
-                      Est. Cost: {costEstimates[selectedModelId].formattedCost}
-                    </div>
-                    <div className="text-xs text-green-600">
-                      {eligibility.emailCount} emails @ ~${costEstimates[selectedModelId].costPerEmail.toFixed(4)}/email
-                    </div>
-                  </div>
-                </div>
-              )}
-
+            {/* Status and Actions Row */}
+            <div className="flex flex-wrap items-center gap-3">
               {/* Start Button */}
               <Button
                 onClick={startExtractionJob}
@@ -457,6 +447,35 @@ export default function DashboardPage() {
                 <RefreshCw className="h-4 w-4" />
                 Refresh
               </Button>
+
+              {/* Spacer */}
+              <div className="flex-1" />
+
+              {/* Eligibility Status */}
+              {checkingEligibility && (
+                <div className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg border border-gray-200">
+                  <Loader2 className="h-4 w-4 text-gray-500 animate-spin" />
+                  <span className="text-sm text-gray-600">Checking...</span>
+                </div>
+              )}
+
+              {!checkingEligibility && eligibility && !eligibility.eligible && (
+                <div className="flex items-center gap-2 p-2 bg-amber-50 rounded-lg border border-amber-200">
+                  <Ban className="h-4 w-4 text-amber-600" />
+                  <div className="text-sm">
+                    <span className="font-medium text-amber-800">Already Extracted</span>
+                  </div>
+                </div>
+              )}
+
+              {!checkingEligibility && eligibility?.eligible && costEstimates[selectedModelId] && (
+                <div className="flex items-center gap-2 p-2 bg-green-50 rounded-lg border border-green-200">
+                  <DollarSign className="h-4 w-4 text-green-600" />
+                  <span className="text-sm font-medium text-green-800">
+                    Est: {costEstimates[selectedModelId].formattedCost}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Version Info */}

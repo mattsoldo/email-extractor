@@ -45,6 +45,28 @@ export const jobStatusEnum = pgEnum("job_status", [
   "cancelled",
 ]);
 
+export const modelProviderEnum = pgEnum("model_provider", [
+  "anthropic",
+  "openai",
+  "google",
+]);
+
+// AI Models - stores model configurations (takes precedence over code defaults)
+export const aiModels = pgTable("ai_models", {
+  id: text("id").primaryKey(), // The API model ID (e.g., "claude-sonnet-4-5-20241022")
+  provider: modelProviderEnum("provider").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  inputCostPerMillion: decimal("input_cost_per_million", { precision: 10, scale: 4 }).notNull(),
+  outputCostPerMillion: decimal("output_cost_per_million", { precision: 10, scale: 4 }).notNull(),
+  contextWindow: integer("context_window").notNull(),
+  isRecommended: boolean("is_recommended").default(false),
+  isActive: boolean("is_active").default(true),
+  sortOrder: integer("sort_order").default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // Account corpus - groups of accounts representing the same money/entity
 export const accountCorpus = pgTable("account_corpus", {
   id: text("id").primaryKey(),
@@ -312,3 +334,5 @@ export type ExtractionRun = typeof extractionRuns.$inferSelect;
 export type NewExtractionRun = typeof extractionRuns.$inferInsert;
 export type EmailSet = typeof emailSets.$inferSelect;
 export type NewEmailSet = typeof emailSets.$inferInsert;
+export type AiModel = typeof aiModels.$inferSelect;
+export type NewAiModel = typeof aiModels.$inferInsert;

@@ -424,8 +424,8 @@ export default function ModelsPage() {
 
         {/* Model Discovery Dialog */}
         <Dialog open={showDiscoveryDialog} onOpenChange={setShowDiscoveryDialog}>
-          <DialogContent className="max-w-2xl max-h-[80vh]">
-            <DialogHeader>
+          <DialogContent className="max-w-2xl flex flex-col" style={{ maxHeight: "85vh" }}>
+            <DialogHeader className="flex-shrink-0">
               <DialogTitle className="flex items-center gap-2">
                 <Sparkles className="h-5 w-5" />
                 Discover New AI Models
@@ -435,7 +435,7 @@ export default function ModelsPage() {
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-4">
+            <div className="flex flex-col flex-1 min-h-0 space-y-4">
               {discovering && (
                 <div className="flex items-center justify-center py-12">
                   <div className="text-center space-y-3">
@@ -525,7 +525,7 @@ export default function ModelsPage() {
                     </Button>
                   </div>
 
-                  <ScrollArea className="h-[350px] border rounded-lg">
+                  <div className="flex-1 min-h-0 border rounded-lg overflow-y-auto">
                     <div className="p-2 space-y-2">
                       {filteredDiscoveredModels.map((model) => (
                         <div
@@ -572,7 +572,7 @@ export default function ModelsPage() {
                         </div>
                       ))}
                     </div>
-                  </ScrollArea>
+                  </div>
                 </>
               )}
 
@@ -584,7 +584,7 @@ export default function ModelsPage() {
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 pt-4 border-t">
+              <div className="flex-shrink-0 flex justify-end gap-2 pt-4 border-t">
                 <Button variant="outline" onClick={() => setShowDiscoveryDialog(false)}>
                   Cancel
                 </Button>

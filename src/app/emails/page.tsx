@@ -498,15 +498,15 @@ function EmailsContent() {
 
         {/* Emails Table */}
         <Card>
-          <CardContent className="p-0">
-            <Table>
+          <CardContent className="p-0 overflow-x-auto">
+            <Table className="table-fixed w-full min-w-[700px]">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Subject</TableHead>
-                  <TableHead>Sender</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="w-[100px]">Actions</TableHead>
+                  <TableHead className="w-[35%]">Subject</TableHead>
+                  <TableHead className="w-[20%]">Sender</TableHead>
+                  <TableHead className="w-[12%]">Date</TableHead>
+                  <TableHead className="w-[23%]">Status</TableHead>
+                  <TableHead className="w-[10%]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -525,32 +525,44 @@ function EmailsContent() {
                 ) : (
                   emails.map((email) => (
                     <TableRow key={email.id}>
-                      <TableCell className="font-medium max-w-[300px] truncate">
-                        {email.subject || "(no subject)"}
+                      <TableCell className="font-medium">
+                        <span className="block truncate" title={email.subject || "(no subject)"}>
+                          {email.subject || "(no subject)"}
+                        </span>
                       </TableCell>
                       <TableCell className="text-gray-600">
-                        {email.sender || "(unknown)"}
+                        <span className="block truncate" title={email.sender || "(unknown)"}>
+                          {email.sender || "(unknown)"}
+                        </span>
                       </TableCell>
-                      <TableCell className="text-gray-600">
+                      <TableCell className="text-gray-600 whitespace-nowrap">
                         {email.date
                           ? format(new Date(email.date), "MMM d, yyyy")
                           : "-"}
                       </TableCell>
                       <TableCell>
-                        {getStatusBadge(
-                          email.extractionStatus,
-                          email.skipReason
-                        )}
-                        {email.skipReason && (
-                          <span className="text-xs text-gray-500 block mt-1">
-                            {email.skipReason}
-                          </span>
-                        )}
-                        {email.informationalNotes && (
-                          <span className="text-xs text-blue-500 block mt-1">
-                            {email.informationalNotes}
-                          </span>
-                        )}
+                        <div className="flex flex-col gap-1">
+                          {getStatusBadge(
+                            email.extractionStatus,
+                            email.skipReason
+                          )}
+                          {email.skipReason && (
+                            <span
+                              className="text-xs text-gray-500 truncate block max-w-full"
+                              title={email.skipReason}
+                            >
+                              {email.skipReason}
+                            </span>
+                          )}
+                          {email.informationalNotes && (
+                            <span
+                              className="text-xs text-blue-500 truncate block max-w-full"
+                              title={email.informationalNotes}
+                            >
+                              {email.informationalNotes}
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1">

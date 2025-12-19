@@ -196,9 +196,11 @@ export const jobs = pgTable("jobs", {
   skippedItems: integer("skipped_items").default(0),
   informationalItems: integer("informational_items").default(0),
   errorMessage: text("error_message"),
+  cancelNotes: text("cancel_notes"), // User notes when job was cancelled
   metadata: jsonb("metadata").$type<Record<string, unknown>>(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
+  cancelledAt: timestamp("cancelled_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

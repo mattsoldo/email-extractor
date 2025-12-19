@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { format } from "date-fns";
+import { Progress } from "@/components/ui/progress";
 import {
   ChevronLeft,
   ChevronRight,
@@ -32,6 +33,7 @@ import {
   Clock,
   FileText,
   ArrowRight,
+  ExternalLink,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -60,6 +62,11 @@ interface ExtractionRun {
     id: string;
     type: string;
     status: string;
+    totalItems: number | null;
+    processedItems: number | null;
+    failedItems: number | null;
+    skippedItems: number | null;
+    informationalItems: number | null;
   } | null;
 }
 
@@ -128,6 +135,18 @@ export default function RunsPage() {
   useEffect(() => {
     fetchRuns();
   }, [fetchRuns]);
+
+  // Poll for updates when there are running jobs
+  useEffect(() => {
+    const hasRunningJobs = runs.some((run) => run.status === "running");
+    if (!hasRunningJobs) return;
+
+    const interval = setInterval(() => {
+      fetchRuns();
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [runs, fetchRuns]);
 
   const fetchRunDetails = async (runId: string) => {
     setLoadingRun(true);
@@ -287,54 +306,92 @@ export default function RunsPage() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  runs.map((run) => (
-                    <TableRow key={run.id}>
-                      <TableCell>
-                        <div className="flex flex-col">
-                          <span className="font-semibold">v{run.version}</span>
-                          {run.name && (
-                            <span className="text-xs text-gray-500">
-                              {run.name}
+                  runs.map((run) => {
+                    const isRunning = run.status === "running";
+                    const progress = run.job?.totalItems && run.job.totalItems > 0
+                      ? ((run.job.processedItems || 0) / run.job.totalItems) * 100
+                      : 0;
+
+                    return (
+                      <TableRow key={run.id} className={isRunning ? "bg-blue-50/30" : ""}>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <span className="font-semibold">v{run.version}</span>
+                            {run.name && (
+                              <span className="text-xs text-gray-500">
+                                {run.name}
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col gap-1">
+                            {getStatusBadge(run.status)}
+                            {isRunning && run.job && (
+                              <div className="w-24">
+                                <Progress value={progress} className="h-1.5" />
+                                <span className="text-[10px] text-gray-500">
+                                  {run.job.processedItems || 0}/{run.job.totalItems || 0}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-xs text-gray-600 font-mono">
+                          {run.modelId ? run.modelId.split("/").pop() : "-"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {isRunning && run.job ? (
+                            <span className="text-blue-600">
+                              {run.job.processedItems || 0}
                             </span>
+                          ) : (
+                            run.emailsProcessed
                           )}
-                        </div>
-                      </TableCell>
-                      <TableCell>{getStatusBadge(run.status)}</TableCell>
-                      <TableCell className="text-xs text-gray-600 font-mono">
-                        {run.modelId ? run.modelId.split("/").pop() : "-"}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {run.emailsProcessed}
-                      </TableCell>
-                      <TableCell className="text-right font-medium">
-                        {run.transactionsCreated}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {run.errorCount > 0 ? (
-                          <span className="text-red-600">{run.errorCount}</span>
-                        ) : (
-                          <span className="text-gray-400">0</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-gray-600 text-sm">
-                        {format(new Date(run.startedAt), "MMM d, h:mm a")}
-                      </TableCell>
-                      <TableCell className="text-gray-600 text-sm">
-                        {run.stats?.processingTimeMs
-                          ? formatDuration(run.stats.processingTimeMs)
-                          : "-"}
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => fetchRunDetails(run.id)}
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                        </TableCell>
+                        <TableCell className="text-right font-medium">
+                          {run.transactionsCreated}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {(isRunning ? run.job?.failedItems : run.errorCount) ? (
+                            <span className="text-red-600">
+                              {isRunning ? run.job?.failedItems || 0 : run.errorCount}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">0</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-gray-600 text-sm">
+                          {format(new Date(run.startedAt), "MMM d, h:mm a")}
+                        </TableCell>
+                        <TableCell className="text-gray-600 text-sm">
+                          {run.stats?.processingTimeMs
+                            ? formatDuration(run.stats.processingTimeMs)
+                            : isRunning ? (
+                                <RefreshCw className="h-4 w-4 animate-spin text-blue-500" />
+                              ) : "-"}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => fetchRunDetails(run.id)}
+                            >
+                              <Eye className="h-4 w-4" />
+                            </Button>
+                            {run.job && (
+                              <Link href={`/jobs/${run.job.id}`}>
+                                <Button variant="ghost" size="sm">
+                                  <ExternalLink className="h-4 w-4" />
+                                </Button>
+                              </Link>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
                 )}
               </TableBody>
             </Table>

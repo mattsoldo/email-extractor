@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
   const limit = parseInt(searchParams.get("limit") || "20");
   const offset = (page - 1) * limit;
 
-  // Get extraction runs with job info
+  // Get extraction runs with job info (including progress for running jobs)
   const runs = await db
     .select({
       run: extractionRuns,
@@ -18,6 +18,11 @@ export async function GET(request: NextRequest) {
         id: jobs.id,
         type: jobs.type,
         status: jobs.status,
+        totalItems: jobs.totalItems,
+        processedItems: jobs.processedItems,
+        failedItems: jobs.failedItems,
+        skippedItems: jobs.skippedItems,
+        informationalItems: jobs.informationalItems,
       },
     })
     .from(extractionRuns)

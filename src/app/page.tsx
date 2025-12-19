@@ -28,7 +28,9 @@ import {
   FolderOpen,
   Ban,
   Loader2,
+  ExternalLink,
 } from "lucide-react";
+import Link from "next/link";
 
 interface JobProgress {
   id: string;
@@ -474,55 +476,60 @@ export default function DashboardPage() {
             </h2>
             <div className="space-y-4">
               {activeJobs.map((job) => (
-                <Card key={job.id}>
-                  <CardContent className="pt-6">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        {getStatusIcon(job.status)}
-                        <span className="font-medium capitalize">
-                          {job.type.replace("_", " ")}
-                        </span>
-                        <Badge
-                          variant={
-                            job.status === "running"
-                              ? "default"
-                              : job.status === "completed"
-                              ? "secondary"
-                              : "destructive"
-                          }
-                        >
-                          {job.status}
-                        </Badge>
+                <Link key={job.id} href={`/jobs/${job.id}`}>
+                  <Card className="hover:shadow-md transition-shadow cursor-pointer">
+                    <CardContent className="pt-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2">
+                          {getStatusIcon(job.status)}
+                          <span className="font-medium capitalize">
+                            {job.type.replace("_", " ")}
+                          </span>
+                          <Badge
+                            variant={
+                              job.status === "running"
+                                ? "default"
+                                : job.status === "completed"
+                                ? "secondary"
+                                : "destructive"
+                            }
+                          >
+                            {job.status}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="text-sm text-gray-500">
+                            {job.processedItems} / {job.totalItems} items
+                            {job.informationalItems > 0 && (
+                              <span className="text-blue-500 ml-2">
+                                ({job.informationalItems} info)
+                              </span>
+                            )}
+                            {job.failedItems > 0 && (
+                              <span className="text-red-500 ml-2">
+                                ({job.failedItems} failed)
+                              </span>
+                            )}
+                            {job.skippedItems > 0 && (
+                              <span className="text-yellow-500 ml-2">
+                                ({job.skippedItems} skipped)
+                              </span>
+                            )}
+                          </div>
+                          <ExternalLink className="h-4 w-4 text-gray-400" />
+                        </div>
                       </div>
-                      <div className="text-sm text-gray-500">
-                        {job.processedItems} / {job.totalItems} items
-                        {job.informationalItems > 0 && (
-                          <span className="text-blue-500 ml-2">
-                            ({job.informationalItems} info)
-                          </span>
-                        )}
-                        {job.failedItems > 0 && (
-                          <span className="text-red-500 ml-2">
-                            ({job.failedItems} failed)
-                          </span>
-                        )}
-                        {job.skippedItems > 0 && (
-                          <span className="text-yellow-500 ml-2">
-                            ({job.skippedItems} skipped)
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <Progress
-                      value={
-                        job.totalItems > 0
-                          ? (job.processedItems / job.totalItems) * 100
-                          : 0
-                      }
-                      className="h-2"
-                    />
-                  </CardContent>
-                </Card>
+                      <Progress
+                        value={
+                          job.totalItems > 0
+                            ? (job.processedItems / job.totalItems) * 100
+                            : 0
+                        }
+                        className="h-2"
+                      />
+                    </CardContent>
+                  </Card>
+                </Link>
               ))}
             </div>
           </div>

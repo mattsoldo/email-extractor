@@ -20,25 +20,52 @@ export async function GET() {
       console.log("aiModels table not found, using defaults");
     }
 
-    // If no models in DB, use defaults from code
-    const models = dbModels.length > 0
-      ? dbModels.map(m => ({
-          id: m.id,
-          provider: m.provider as ModelProvider,
-          name: m.name,
-          description: m.description || "",
-          inputCostPerMillion: parseFloat(m.inputCostPerMillion),
-          outputCostPerMillion: parseFloat(m.outputCostPerMillion),
-          contextWindow: m.contextWindow,
-          recommended: m.isRecommended || false,
-          isActive: m.isActive !== false,
-          available: isProviderConfigured(m.provider as ModelProvider),
-        }))
-      : AVAILABLE_MODELS.map(m => ({
-          ...m,
-          isActive: m.isActive !== false,
-          available: isProviderConfigured(m.provider),
-        }));
+    // Create a map of database models by ID for quick lookup
+    const dbModelMap = new Map(dbModels.map(m => [m.id, m]));
+
+    // Start with default models, applying any DB overrides
+    const models = AVAILABLE_MODELS.map(m => {
+      const dbModel = dbModelMap.get(m.id);
+      if (dbModel) {
+        // Use database values for this model
+        return {
+          id: dbModel.id,
+          provider: dbModel.provider as ModelProvider,
+          name: dbModel.name,
+          description: dbModel.description || "",
+          inputCostPerMillion: parseFloat(dbModel.inputCostPerMillion),
+          outputCostPerMillion: parseFloat(dbModel.outputCostPerMillion),
+          contextWindow: dbModel.contextWindow,
+          recommended: dbModel.isRecommended || false,
+          isActive: dbModel.isActive !== false,
+          available: isProviderConfigured(dbModel.provider as ModelProvider),
+        };
+      }
+      // Use default values
+      return {
+        ...m,
+        isActive: m.isActive !== false,
+        available: isProviderConfigured(m.provider),
+      };
+    });
+
+    // Add any database models that aren't in defaults (discovered models)
+    for (const dbModel of dbModels) {
+      if (!AVAILABLE_MODELS.some(m => m.id === dbModel.id)) {
+        models.push({
+          id: dbModel.id,
+          provider: dbModel.provider as ModelProvider,
+          name: dbModel.name,
+          description: dbModel.description || "",
+          inputCostPerMillion: parseFloat(dbModel.inputCostPerMillion),
+          outputCostPerMillion: parseFloat(dbModel.outputCostPerMillion),
+          contextWindow: dbModel.contextWindow,
+          recommended: dbModel.isRecommended || false,
+          isActive: dbModel.isActive !== false,
+          available: isProviderConfigured(dbModel.provider as ModelProvider),
+        });
+      }
+    }
 
     // Provider status
     const providers: Array<{ provider: string; configured: boolean; modelCount: number }> = [

@@ -127,9 +127,28 @@ export default function DashboardPage() {
         fetch("/api/accounts"),
       ]);
 
-      const emailsData = await emailsRes.json();
-      const transactionsData = await transactionsRes.json();
-      const accountsData = await accountsRes.json();
+      // Safely parse JSON responses
+      let emailsData = { pagination: { total: 0 }, statusCounts: {} };
+      let transactionsData = { pagination: { total: 0 }, typeCounts: {} };
+      let accountsData = { accounts: [] };
+
+      try {
+        emailsData = await emailsRes.json();
+      } catch (e) {
+        console.error("Failed to parse emails response:", e);
+      }
+
+      try {
+        transactionsData = await transactionsRes.json();
+      } catch (e) {
+        console.error("Failed to parse transactions response:", e);
+      }
+
+      try {
+        accountsData = await accountsRes.json();
+      } catch (e) {
+        console.error("Failed to parse accounts response:", e);
+      }
 
       setStats({
         emails: {

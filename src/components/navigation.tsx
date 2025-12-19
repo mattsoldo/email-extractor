@@ -13,6 +13,7 @@ import {
   History,
   FolderOpen,
   Scale,
+  Cpu,
 } from "lucide-react";
 
 const navItems = [
@@ -24,6 +25,7 @@ const navItems = [
   { href: "/compare", label: "Compare", icon: Scale },
   { href: "/accounts", label: "Accounts", icon: Wallet },
   { href: "/corpus", label: "Account Groups", icon: Link2 },
+  { href: "/models", label: "Models", icon: Cpu },
   { href: "/chat", label: "Chat", icon: MessageSquare },
 ];
 

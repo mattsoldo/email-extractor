@@ -14,22 +14,13 @@ export interface ModelConfig {
   recommended?: boolean;        // Flag for recommended models
 }
 
-// Current pricing as of December 2025
+// Current pricing as of December 2024
 export const AVAILABLE_MODELS: ModelConfig[] = [
-  // Anthropic Claude 4.5 Series
+  // Anthropic Claude Models (actual API model IDs)
   {
-    id: "claude-opus-4-5-20251101",
+    id: "claude-sonnet-4-20250514",
     provider: "anthropic",
-    name: "Claude 4.5 Opus",
-    description: "Most capable Claude model. Best for complex financial documents.",
-    inputCostPerMillion: 15.00,
-    outputCostPerMillion: 75.00,
-    contextWindow: 200000,
-  },
-  {
-    id: "claude-sonnet-4-5-20251101",
-    provider: "anthropic",
-    name: "Claude 4.5 Sonnet",
+    name: "Claude Sonnet 4",
     description: "Best balance of speed, accuracy, and cost. Recommended for most extractions.",
     inputCostPerMillion: 3.00,
     outputCostPerMillion: 15.00,
@@ -37,46 +28,46 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
     recommended: true,
   },
   {
-    id: "claude-haiku-4-5-20251101",
+    id: "claude-3-5-sonnet-20241022",
     provider: "anthropic",
-    name: "Claude 4.5 Haiku",
+    name: "Claude 3.5 Sonnet",
+    description: "Previous generation Sonnet. Very capable and cost-effective.",
+    inputCostPerMillion: 3.00,
+    outputCostPerMillion: 15.00,
+    contextWindow: 200000,
+  },
+  {
+    id: "claude-3-5-haiku-20241022",
+    provider: "anthropic",
+    name: "Claude 3.5 Haiku",
     description: "Fastest and cheapest Claude model. Good for simple emails.",
     inputCostPerMillion: 0.80,
     outputCostPerMillion: 4.00,
     contextWindow: 200000,
   },
-  // OpenAI GPT-5 Series
+  // OpenAI Models (actual API model IDs)
   {
-    id: "gpt-5.2",
+    id: "gpt-4o",
     provider: "openai",
-    name: "GPT-5.2",
+    name: "GPT-4o",
     description: "OpenAI's flagship model. Strong at structured data extraction.",
-    inputCostPerMillion: 5.00,
-    outputCostPerMillion: 15.00,
-    contextWindow: 200000,
-  },
-  {
-    id: "gpt-5-mini",
-    provider: "openai",
-    name: "GPT-5 Mini",
-    description: "Cost-effective GPT-5 variant. Good balance of performance and price.",
-    inputCostPerMillion: 0.30,
-    outputCostPerMillion: 1.20,
+    inputCostPerMillion: 2.50,
+    outputCostPerMillion: 10.00,
     contextWindow: 128000,
   },
   {
-    id: "gpt-5-nano",
+    id: "gpt-4o-mini",
     provider: "openai",
-    name: "GPT-5 Nano",
-    description: "Fastest and cheapest OpenAI model. Good for simple extractions.",
-    inputCostPerMillion: 0.10,
-    outputCostPerMillion: 0.40,
-    contextWindow: 64000,
+    name: "GPT-4o Mini",
+    description: "Cost-effective GPT-4 variant. Good balance of performance and price.",
+    inputCostPerMillion: 0.15,
+    outputCostPerMillion: 0.60,
+    contextWindow: 128000,
   },
 ];
 
 // Default model for new extractions
-export const DEFAULT_MODEL_ID = "claude-sonnet-4-5-20251101";
+export const DEFAULT_MODEL_ID = "claude-sonnet-4-20250514";
 
 /**
  * Get a model configuration by ID

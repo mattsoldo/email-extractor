@@ -83,6 +83,10 @@ export default function ModelsPage() {
   const [selectedDiscovered, setSelectedDiscovered] = useState<Set<string>>(new Set());
   const [addingModels, setAddingModels] = useState(false);
 
+  // Discovery filters
+  const [discoverySearch, setDiscoverySearch] = useState("");
+  const [discoveryProviderFilter, setDiscoveryProviderFilter] = useState<string>("all");
+
   // Add model dialog
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newModel, setNewModel] = useState<Partial<ModelConfig>>({
@@ -252,6 +256,19 @@ export default function ModelsPage() {
     return acc;
   }, {});
 
+  // Filter discovered models based on search and provider
+  const filteredDiscoveredModels = discoveredModels.filter(model => {
+    const matchesSearch = discoverySearch === "" ||
+      model.name.toLowerCase().includes(discoverySearch.toLowerCase()) ||
+      model.id.toLowerCase().includes(discoverySearch.toLowerCase());
+    const matchesProvider = discoveryProviderFilter === "all" ||
+      model.provider === discoveryProviderFilter;
+    return matchesSearch && matchesProvider;
+  });
+
+  // Get unique providers from discovered models
+  const discoveredProviders = Array.from(new Set(discoveredModels.map(m => m.provider)));
+
   return (
     <div className="min-h-screen bg-gray-50">
       <Navigation />
@@ -269,7 +286,12 @@ export default function ModelsPage() {
               <Plus className="h-4 w-4" />
               Add Model
             </Button>
-            <Button onClick={() => { setShowDiscoveryDialog(true); discoverNewModels(); }} className="gap-2">
+            <Button onClick={() => {
+              setShowDiscoveryDialog(true);
+              setDiscoverySearch("");
+              setDiscoveryProviderFilter("all");
+              discoverNewModels();
+            }} className="gap-2">
               <Sparkles className="h-4 w-4" />
               Discover New Models
             </Button>
@@ -433,28 +455,79 @@ export default function ModelsPage() {
 
               {!discovering && discoveredModels.length > 0 && (
                 <>
+                  {/* Filter Controls */}
+                  <div className="space-y-3">
+                    {/* Search Input */}
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                      <Input
+                        placeholder="Search by name or ID..."
+                        value={discoverySearch}
+                        onChange={(e) => setDiscoverySearch(e.target.value)}
+                        className="pl-9"
+                      />
+                    </div>
+
+                    {/* Provider Filter */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm text-gray-600">Provider:</span>
+                      <Button
+                        variant={discoveryProviderFilter === "all" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setDiscoveryProviderFilter("all")}
+                      >
+                        All ({discoveredModels.length})
+                      </Button>
+                      {discoveredProviders.map(provider => (
+                        <Button
+                          key={provider}
+                          variant={discoveryProviderFilter === provider ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setDiscoveryProviderFilter(provider)}
+                          className="gap-1"
+                        >
+                          <span className={`w-2 h-2 rounded-full ${
+                            provider === "anthropic" ? "bg-orange-500" :
+                            provider === "openai" ? "bg-green-500" : "bg-blue-500"
+                          }`} />
+                          {getProviderLabel(provider)} ({discoveredModels.filter(m => m.provider === provider).length})
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="flex items-center justify-between">
                     <p className="text-sm text-gray-600">
-                      Found {discoveredModels.length} models not in your configuration
+                      Showing {filteredDiscoveredModels.length} of {discoveredModels.length} models
                     </p>
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => {
-                        if (selectedDiscovered.size === discoveredModels.length) {
-                          setSelectedDiscovered(new Set());
+                        const filteredIds = filteredDiscoveredModels.map(m => m.id);
+                        const allFilteredSelected = filteredIds.every(id => selectedDiscovered.has(id));
+                        if (allFilteredSelected) {
+                          // Deselect all filtered
+                          const newSelected = new Set(selectedDiscovered);
+                          filteredIds.forEach(id => newSelected.delete(id));
+                          setSelectedDiscovered(newSelected);
                         } else {
-                          setSelectedDiscovered(new Set(discoveredModels.map(m => m.id)));
+                          // Select all filtered
+                          const newSelected = new Set(selectedDiscovered);
+                          filteredIds.forEach(id => newSelected.add(id));
+                          setSelectedDiscovered(newSelected);
                         }
                       }}
                     >
-                      {selectedDiscovered.size === discoveredModels.length ? "Deselect All" : "Select All"}
+                      {filteredDiscoveredModels.every(m => selectedDiscovered.has(m.id))
+                        ? "Deselect All"
+                        : "Select All"}
                     </Button>
                   </div>
 
-                  <ScrollArea className="h-[400px] border rounded-lg">
+                  <ScrollArea className="h-[350px] border rounded-lg">
                     <div className="p-2 space-y-2">
-                      {discoveredModels.map((model) => (
+                      {filteredDiscoveredModels.map((model) => (
                         <div
                           key={model.id}
                           className={`p-3 rounded-lg border cursor-pointer transition-colors ${

@@ -33,7 +33,9 @@ import {
   Mail,
   AlertTriangle,
   Plus,
+  RotateCcw,
 } from "lucide-react";
+import { toast } from "sonner";
 import Link from "next/link";
 
 interface EmailSet {
@@ -57,6 +59,10 @@ export default function EmailSetsPage() {
   const [createName, setCreateName] = useState("");
   const [createDescription, setCreateDescription] = useState("");
   const [creating, setCreating] = useState(false);
+
+  // Reset state
+  const [resetTarget, setResetTarget] = useState<EmailSet | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   const fetchSets = useCallback(async () => {
     setLoading(true);
@@ -87,9 +93,14 @@ export default function EmailSetsPage() {
       if (res.ok) {
         fetchSets();
         setDeleteTarget(null);
+      } else {
+        const data = await res.json();
+        console.error("Failed to delete set:", data);
+        alert(`Failed to delete set: ${data.error || "Unknown error"}`);
       }
     } catch (error) {
       console.error("Failed to delete set:", error);
+      alert(`Failed to delete set: ${error}`);
     } finally {
       setDeleting(false);
     }
@@ -147,6 +158,35 @@ export default function EmailSetsPage() {
       console.error("Failed to create set:", error);
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleReset = async () => {
+    if (!resetTarget) return;
+
+    setResetting(true);
+    try {
+      const res = await fetch("/api/emails/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          setId: resetTarget.id,
+          deleteExisting: false, // Keep old transactions for comparison
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(`Reset ${data.resetCount} emails for re-processing`);
+        setResetTarget(null);
+      } else {
+        toast.error(data.error || "Failed to reset emails");
+      }
+    } catch (error) {
+      console.error("Failed to reset set:", error);
+      toast.error("Failed to reset emails");
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -260,6 +300,15 @@ export default function EmailSetsPage() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            onClick={() => setResetTarget(set)}
+                            title="Reset for re-processing"
+                            className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={() => openEditDialog(set)}
                             title="Edit set"
                           >
@@ -347,6 +396,43 @@ export default function EmailSetsPage() {
                 Cancel
               </Button>
               <Button onClick={handleEdit}>Save Changes</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Reset Confirmation Dialog */}
+        <Dialog open={!!resetTarget} onOpenChange={() => setResetTarget(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-blue-600">
+                <RotateCcw className="h-5 w-5" />
+                Reset for Re-processing
+              </DialogTitle>
+              <DialogDescription>
+                This will reset all processed emails in &quot;{resetTarget?.name}&quot;
+                back to pending status so they can be extracted again with a different
+                model. Existing transactions will be kept for comparison.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-4 text-sm text-gray-600">
+              <p>This is useful for:</p>
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li>Testing a different AI model on the same emails</li>
+                <li>Re-extracting after fixing schema issues</li>
+                <li>Comparing extraction quality between models</li>
+              </ul>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setResetTarget(null)}
+                disabled={resetting}
+              >
+                Cancel
+              </Button>
+              <Button onClick={handleReset} disabled={resetting}>
+                {resetting ? "Resetting..." : `Reset ${resetTarget?.emailCount || 0} Email(s)`}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { transactions, accounts } from "@/db/schema";
-import { desc, eq, and, gte, lte, sql, count } from "drizzle-orm";
+import { transactions, accounts, emails } from "@/db/schema";
+import { desc, eq, and, gte, lte, sql, count, inArray } from "drizzle-orm";
 
 // GET /api/transactions - List transactions with filtering
 export async function GET(request: NextRequest) {
@@ -10,6 +10,8 @@ export async function GET(request: NextRequest) {
   const accountId = searchParams.get("accountId");
   const startDate = searchParams.get("startDate");
   const endDate = searchParams.get("endDate");
+  const setId = searchParams.get("setId"); // Filter by email set
+  const runId = searchParams.get("runId"); // Filter by extraction run
   const page = parseInt(searchParams.get("page") || "1");
   const limit = parseInt(searchParams.get("limit") || "50");
   const offset = (page - 1) * limit;
@@ -27,6 +29,31 @@ export async function GET(request: NextRequest) {
   }
   if (endDate) {
     conditions.push(lte(transactions.date, new Date(endDate)));
+  }
+  if (runId) {
+    conditions.push(eq(transactions.extractionRunId, runId));
+  }
+
+  // If filtering by setId, we need to get email IDs from that set first
+  let emailIdsInSet: string[] | null = null;
+  if (setId) {
+    const setEmails = await db
+      .select({ id: emails.id })
+      .from(emails)
+      .where(eq(emails.setId, setId));
+    emailIdsInSet = setEmails.map((e) => e.id);
+
+    if (emailIdsInSet.length > 0) {
+      conditions.push(inArray(transactions.sourceEmailId, emailIdsInSet));
+    } else {
+      // No emails in set, return empty results
+      return NextResponse.json({
+        transactions: [],
+        pagination: { page, limit, total: 0, totalPages: 0 },
+        typeCounts: {},
+        totals: {},
+      });
+    }
   }
 
   // Query with joins

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
 import { Navigation } from "@/components/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,9 +27,30 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { format } from "date-fns";
-import { ChevronLeft, ChevronRight, Eye, RefreshCw, Download } from "lucide-react";
+import { ChevronLeft, ChevronRight, Eye, RefreshCw, Download, FolderOpen, History, FileSpreadsheet, FileText, Mail } from "lucide-react";
+
+interface EmailSet {
+  id: string;
+  name: string;
+  emailCount: number;
+}
+
+interface ExtractionRun {
+  id: string;
+  name: string | null;
+  version: number;
+  transactionsCreated: number;
+  completedAt: string | null;
+  modelId: string | null;
+}
 
 interface Transaction {
   id: string;
@@ -41,6 +63,7 @@ interface Transaction {
   price: string | null;
   fees: string | null;
   data: Record<string, unknown>;
+  sourceEmailId: string | null;
   account: {
     id: string;
     displayName: string;
@@ -78,10 +101,35 @@ export default function TransactionsPage() {
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [typeCounts, setTypeCounts] = useState<Record<string, number>>({});
   const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [setFilter, setSetFilter] = useState<string>("all");
+  const [runFilter, setRunFilter] = useState<string>("all");
   const [loading, setLoading] = useState(true);
   const [selectedTransaction, setSelectedTransaction] =
     useState<Transaction | null>(null);
   const [page, setPage] = useState(1);
+
+  // Filter options
+  const [emailSets, setEmailSets] = useState<EmailSet[]>([]);
+  const [extractionRuns, setExtractionRuns] = useState<ExtractionRun[]>([]);
+
+  // Fetch filter options
+  useEffect(() => {
+    async function fetchFilterOptions() {
+      try {
+        const [setsRes, runsRes] = await Promise.all([
+          fetch("/api/email-sets"),
+          fetch("/api/runs"),
+        ]);
+        const setsData = await setsRes.json();
+        const runsData = await runsRes.json();
+        setEmailSets(setsData.sets || []);
+        setExtractionRuns(runsData.runs || []);
+      } catch (error) {
+        console.error("Failed to fetch filter options:", error);
+      }
+    }
+    fetchFilterOptions();
+  }, []);
 
   const fetchTransactions = useCallback(async () => {
     setLoading(true);
@@ -92,6 +140,12 @@ export default function TransactionsPage() {
       });
       if (typeFilter !== "all") {
         params.set("type", typeFilter);
+      }
+      if (setFilter !== "all") {
+        params.set("setId", setFilter);
+      }
+      if (runFilter !== "all") {
+        params.set("runId", runFilter);
       }
 
       const res = await fetch(`/api/transactions?${params}`);
@@ -105,7 +159,7 @@ export default function TransactionsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, typeFilter]);
+  }, [page, typeFilter, setFilter, runFilter]);
 
   useEffect(() => {
     fetchTransactions();
@@ -142,39 +196,18 @@ export default function TransactionsPage() {
     }
   };
 
-  const exportToCsv = () => {
-    // Build CSV content
-    const headers = [
-      "Date",
-      "Type",
-      "Account",
-      "Symbol",
-      "Quantity",
-      "Price",
-      "Amount",
-      "Fees",
-      "Currency",
-    ];
-    const rows = transactions.map((tx) => [
-      tx.date ? format(new Date(tx.date), "yyyy-MM-dd") : "",
-      tx.type,
-      tx.account?.displayName || "",
-      tx.symbol || "",
-      tx.quantity || "",
-      tx.price || "",
-      tx.amount || "",
-      tx.fees || "",
-      tx.currency,
-    ]);
+  const exportTransactions = async (fileFormat: "csv" | "excel") => {
+    // Build export URL with current filters
+    const params = new URLSearchParams({ format: fileFormat });
+    if (setFilter !== "all") {
+      params.set("setId", setFilter);
+    }
+    if (runFilter !== "all") {
+      params.set("runId", runFilter);
+    }
 
-    const csv = [headers, ...rows].map((row) => row.join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `transactions-${typeFilter}-${format(new Date(), "yyyy-MM-dd")}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    // Trigger download
+    window.location.href = `/api/transactions/export?${params}`;
   };
 
   return (
@@ -190,10 +223,24 @@ export default function TransactionsPage() {
             </p>
           </div>
           <div className="flex gap-2">
-            <Button onClick={exportToCsv} variant="outline" className="gap-2">
-              <Download className="h-4 w-4" />
-              Export CSV
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" className="gap-2">
+                  <Download className="h-4 w-4" />
+                  Export All
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => exportTransactions("csv")}>
+                  <FileText className="h-4 w-4 mr-2" />
+                  Export as CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => exportTransactions("excel")}>
+                  <FileSpreadsheet className="h-4 w-4 mr-2" />
+                  Export for Excel
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               onClick={fetchTransactions}
               variant="outline"
@@ -205,23 +252,83 @@ export default function TransactionsPage() {
           </div>
         </div>
 
-        {/* Type Filter */}
-        <div className="flex items-center gap-4 mb-6">
-          <span className="text-sm text-gray-600">Filter by type:</span>
-          <Select value={typeFilter} onValueChange={setTypeFilter}>
-            <SelectTrigger className="w-[200px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {transactionTypes.map((type) => (
-                <SelectItem key={type} value={type}>
-                  {type === "all"
-                    ? `All (${Object.values(typeCounts).reduce((a, b) => a + b, 0)})`
-                    : `${type.replace(/_/g, " ")} (${typeCounts[type] || 0})`}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-4 mb-6">
+          <div className="flex items-center gap-2">
+            <FolderOpen className="h-4 w-4 text-gray-400" />
+            <span className="text-sm text-gray-600">Set:</span>
+            <Select value={setFilter} onValueChange={(v) => { setSetFilter(v); setPage(1); }}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All sets</SelectItem>
+                {emailSets.map((set) => (
+                  <SelectItem key={set.id} value={set.id}>
+                    {set.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <History className="h-4 w-4 text-gray-400" />
+            <span className="text-sm text-gray-600">Run:</span>
+            <Select value={runFilter} onValueChange={(v) => { setRunFilter(v); setPage(1); }}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All runs</SelectItem>
+                {extractionRuns.map((run) => (
+                  <SelectItem key={run.id} value={run.id}>
+                    <div className="flex items-center gap-2">
+                      <span>{run.name || `Run v${run.version}`}</span>
+                      <span className="text-gray-400">({run.transactionsCreated})</span>
+                      {run.modelId && (
+                        <span className="text-xs text-blue-600">
+                          {run.modelId.includes("claude") ? "Claude" : run.modelId.includes("gpt") ? "GPT" : run.modelId}
+                        </span>
+                      )}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-600">Type:</span>
+            <Select value={typeFilter} onValueChange={(v) => { setTypeFilter(v); setPage(1); }}>
+              <SelectTrigger className="w-[200px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {transactionTypes.map((type) => (
+                  <SelectItem key={type} value={type}>
+                    {type === "all"
+                      ? `All (${Object.values(typeCounts).reduce((a, b) => a + b, 0)})`
+                      : `${type.replace(/_/g, " ")} (${typeCounts[type] || 0})`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {(setFilter !== "all" || runFilter !== "all") && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSetFilter("all");
+                setRunFilter("all");
+                setPage(1);
+              }}
+            >
+              Clear filters
+            </Button>
+          )}
         </div>
 
         {/* Transactions Table */}
@@ -290,13 +397,22 @@ export default function TransactionsPage() {
                         {formatAmount(tx.amount, tx.currency)}
                       </TableCell>
                       <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setSelectedTransaction(tx)}
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setSelectedTransaction(tx)}
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                          {tx.sourceEmailId && (
+                            <Link href={`/emails/${tx.sourceEmailId}`}>
+                              <Button variant="ghost" size="sm" title="View source email">
+                                <Mail className="h-4 w-4" />
+                              </Button>
+                            </Link>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))
@@ -413,6 +529,18 @@ export default function TransactionsPage() {
                       </pre>
                     </div>
                   )}
+
+                {/* Source Email Link */}
+                {selectedTransaction?.sourceEmailId && (
+                  <div className="pt-4 border-t">
+                    <Link href={`/emails/${selectedTransaction.sourceEmailId}`}>
+                      <Button variant="outline" className="gap-2 w-full">
+                        <Mail className="h-4 w-4" />
+                        View Source Email
+                      </Button>
+                    </Link>
+                  </div>
+                )}
               </div>
             </ScrollArea>
           </DialogContent>

@@ -3,7 +3,6 @@ import { db } from "@/db";
 import { jobs } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
 import {
-  startEmailScanJob,
   startExtractionJob,
   getJobProgress,
   getActiveJobs,
@@ -37,17 +36,11 @@ export async function POST(request: NextRequest) {
   let jobId: string;
 
   switch (type) {
-    case "email_scan":
-      const emailFolderPath =
-        options?.emailFolderPath ||
-        process.env.EMAIL_FOLDER_PATH ||
-        "./emails";
-      jobId = await startEmailScanJob(emailFolderPath);
-      break;
-
     case "extraction":
       jobId = await startExtractionJob({
         emailIds: options?.emailIds,
+        setId: options?.setId,
+        modelId: options?.modelId,
         concurrency: options?.concurrency || 3,
       });
       break;

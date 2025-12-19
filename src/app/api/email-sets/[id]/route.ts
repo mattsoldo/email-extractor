@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { emailSets, emails, transactions } from "@/db/schema";
-import { eq, count } from "drizzle-orm";
+import { eq, count, inArray } from "drizzle-orm";
 
 // GET /api/email-sets/[id] - Get a specific email set with stats
 export async function GET(
@@ -76,31 +76,42 @@ export async function DELETE(
     return NextResponse.json({ error: "Set not found" }, { status: 404 });
   }
 
-  // Get email IDs in this set
-  const setEmails = await db
-    .select({ id: emails.id })
-    .from(emails)
-    .where(eq(emails.setId, id));
+  try {
+    // Get email IDs in this set
+    const setEmails = await db
+      .select({ id: emails.id })
+      .from(emails)
+      .where(eq(emails.setId, id));
 
-  const emailIds = setEmails.map((e) => e.id);
+    const emailIds = setEmails.map((e) => e.id);
 
-  // Delete transactions linked to these emails
-  if (emailIds.length > 0) {
-    for (const emailId of emailIds) {
-      await db
-        .delete(transactions)
-        .where(eq(transactions.sourceEmailId, emailId));
+    // Delete transactions linked to these emails (batch delete)
+    if (emailIds.length > 0) {
+      // Delete in chunks to avoid query size limits
+      const CHUNK_SIZE = 500;
+      for (let i = 0; i < emailIds.length; i += CHUNK_SIZE) {
+        const chunk = emailIds.slice(i, i + CHUNK_SIZE);
+        await db
+          .delete(transactions)
+          .where(inArray(transactions.sourceEmailId, chunk));
+      }
     }
+
+    // Delete the emails
+    await db.delete(emails).where(eq(emails.setId, id));
+
+    // Delete the set
+    await db.delete(emailSets).where(eq(emailSets.id, id));
+
+    return NextResponse.json({
+      message: `Deleted set "${set.name}" with ${emailIds.length} emails`,
+      deletedEmails: emailIds.length,
+    });
+  } catch (error) {
+    console.error("Failed to delete email set:", error);
+    return NextResponse.json(
+      { error: "Failed to delete set", details: String(error) },
+      { status: 500 }
+    );
   }
-
-  // Delete the emails
-  await db.delete(emails).where(eq(emails.setId, id));
-
-  // Delete the set
-  await db.delete(emailSets).where(eq(emailSets.id, id));
-
-  return NextResponse.json({
-    message: `Deleted set "${set.name}" with ${emailIds.length} emails`,
-    deletedEmails: emailIds.length,
-  });
 }

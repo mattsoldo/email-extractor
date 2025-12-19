@@ -45,7 +45,6 @@ import {
   Info,
   Upload,
   FileUp,
-  Plus,
   FolderOpen,
   Loader2,
 } from "lucide-react";
@@ -137,8 +136,7 @@ function EmailsContent() {
 
   // Email set state
   const [emailSets, setEmailSets] = useState<EmailSet[]>([]);
-  const [selectedSetId, setSelectedSetId] = useState<string>("none");
-  const [newSetName, setNewSetName] = useState("");
+  const [uploadSetName, setUploadSetName] = useState("");
 
   // Sync URL param to state
   useEffect(() => {
@@ -289,15 +287,11 @@ function EmailsContent() {
           formData.append("files", file);
         });
 
-        // For first batch, handle set creation
-        if (batchIndex === 0) {
-          if (selectedSetId === "new" && newSetName.trim()) {
-            formData.append("newSetName", newSetName.trim());
-          } else if (selectedSetId && selectedSetId !== "none") {
-            formData.append("setId", selectedSetId);
-          }
+        // For first batch, include optional set name
+        if (batchIndex === 0 && uploadSetName.trim()) {
+          formData.append("setName", uploadSetName.trim());
         } else if (createdSetId) {
-          // Use the set created in first batch
+          // Use the set created in first batch for subsequent batches
           formData.append("setId", createdSetId);
         }
 
@@ -405,9 +399,7 @@ function EmailsContent() {
     setUploadResult(null);
     setUploadSummary(null);
     setUploadProgress(0);
-    setSelectedSetId("none");
-    setNewSetName("");
-    fetchEmailSets();
+    setUploadSetName("");
   };
 
   return (
@@ -687,45 +679,18 @@ function EmailsContent() {
             </DialogHeader>
 
             <div className="space-y-4">
-              {/* Email Set Selector */}
+              {/* Set Name Input */}
               <div className="space-y-2">
-                <Label>Add to Email Set (optional)</Label>
-                <Select value={selectedSetId} onValueChange={setSelectedSetId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a set or create new" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">
-                      <span className="text-gray-500">No set</span>
-                    </SelectItem>
-                    <SelectItem value="new">
-                      <span className="flex items-center gap-2">
-                        <Plus className="h-4 w-4" />
-                        Create new set
-                      </span>
-                    </SelectItem>
-                    {emailSets.map((set) => (
-                      <SelectItem key={set.id} value={set.id}>
-                        <span className="flex items-center gap-2">
-                          <FolderOpen className="h-4 w-4" />
-                          {set.name}
-                          <span className="text-gray-400 text-xs">
-                            ({set.emailCount})
-                          </span>
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                {selectedSetId === "new" && (
-                  <Input
-                    placeholder="Enter new set name..."
-                    value={newSetName}
-                    onChange={(e) => setNewSetName(e.target.value)}
-                    className="mt-2"
-                  />
-                )}
+                <Label htmlFor="setName">Set Name (optional)</Label>
+                <Input
+                  id="setName"
+                  placeholder="Auto-generated if empty..."
+                  value={uploadSetName}
+                  onChange={(e) => setUploadSetName(e.target.value)}
+                />
+                <p className="text-xs text-gray-500">
+                  A new set will be created for this upload
+                </p>
               </div>
 
               {/* Drop Zone */}

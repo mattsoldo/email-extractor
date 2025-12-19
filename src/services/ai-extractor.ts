@@ -1,10 +1,9 @@
 import { generateObject } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
+import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import type { ParsedEmail } from "./email-parser";
-
-// Export model ID for tracking in extraction runs
-export const MODEL_ID = "claude-sonnet-4-20250514";
+import { getModelConfig, DEFAULT_MODEL_ID, type ModelConfig } from "./model-config";
 
 // Schema for extracted transaction data
 const TransactionExtractionSchema = z.object({
@@ -134,16 +133,38 @@ const TransactionExtractionSchema = z.object({
 export type TransactionExtraction = z.infer<typeof TransactionExtractionSchema>;
 
 /**
- * Extract transaction data from a parsed email using Claude
+ * Get the AI model instance based on model ID
+ */
+function getModelInstance(modelId: string) {
+  const config = getModelConfig(modelId);
+  if (!config) {
+    throw new Error(`Unknown model: ${modelId}`);
+  }
+
+  if (config.provider === "anthropic") {
+    return anthropic(modelId);
+  }
+  if (config.provider === "openai") {
+    return openai(modelId);
+  }
+
+  throw new Error(`Unsupported provider: ${config.provider}`);
+}
+
+/**
+ * Extract transaction data from a parsed email using the specified model
  */
 export async function extractTransaction(
-  email: ParsedEmail
+  email: ParsedEmail,
+  modelId: string = DEFAULT_MODEL_ID
 ): Promise<TransactionExtraction> {
   // Prepare the email content for the AI
   const emailContent = prepareEmailContent(email);
 
+  const model = getModelInstance(modelId);
+
   const { object } = await generateObject({
-    model: anthropic("claude-sonnet-4-20250514"),
+    model,
     schema: TransactionExtractionSchema,
     prompt: `You are a financial data extraction expert. Analyze this email and extract all financial transaction information.
 
@@ -226,6 +247,7 @@ function stripHtml(html: string): string {
 export async function* extractTransactionsBatch(
   emails: ParsedEmail[],
   options: {
+    modelId?: string;
     concurrency?: number;
     onProgress?: (completed: number, total: number) => void;
   } = {}
@@ -234,7 +256,7 @@ export async function* extractTransactionsBatch(
   extraction: TransactionExtraction | null;
   error: Error | null;
 }> {
-  const { concurrency = 3, onProgress } = options;
+  const { modelId = DEFAULT_MODEL_ID, concurrency = 3, onProgress } = options;
 
   let completed = 0;
   const total = emails.length;
@@ -245,7 +267,7 @@ export async function* extractTransactionsBatch(
 
     const results = await Promise.allSettled(
       batch.map(async (email) => {
-        const extraction = await extractTransaction(email);
+        const extraction = await extractTransaction(email, modelId);
         return { email, extraction };
       })
     );
@@ -272,3 +294,6 @@ export async function* extractTransactionsBatch(
     }
   }
 }
+
+// Re-export for convenience
+export { DEFAULT_MODEL_ID, getModelConfig, AVAILABLE_MODELS } from "./model-config";

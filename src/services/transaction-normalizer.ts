@@ -231,8 +231,22 @@ async function generateCorpusSuggestions(newAccount: Account): Promise<void> {
       const name2 = otherAccount.displayName.toLowerCase();
 
       // Look for common name patterns
-      const words1 = name1.split(/[\s-]+/).filter((w) => w.length > 2);
-      const words2 = name2.split(/[\s-]+/).filter((w) => w.length > 2);
+      // Filter out: short words, masked numbers (XXXX), pure numbers, common filler words
+      const filterMeaninglessWords = (words: string[]) =>
+        words.filter((w) => {
+          // Skip short words
+          if (w.length < 3) return false;
+          // Skip masked patterns like "xxxx", "xxx", or anything with x's
+          if (/^x+$/i.test(w) || /x{2,}/i.test(w)) return false;
+          // Skip pure numbers (could be account numbers or random IDs)
+          if (/^\d+$/.test(w)) return false;
+          // Skip common filler words
+          if (["account", "the", "and", "for", "inc", "llc", "ltd"].includes(w)) return false;
+          return true;
+        });
+
+      const words1 = filterMeaninglessWords(name1.split(/[\s-]+/));
+      const words2 = filterMeaninglessWords(name2.split(/[\s-]+/));
 
       const commonWords = words1.filter((w) => words2.includes(w));
       if (commonWords.length > 0) {

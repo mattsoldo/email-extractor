@@ -6,9 +6,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import {
-  Play,
   RefreshCw,
   Mail,
   ArrowLeftRight,
@@ -17,6 +23,8 @@ import {
   CheckCircle2,
   Clock,
   XCircle,
+  DollarSign,
+  Cpu,
 } from "lucide-react";
 
 interface JobProgress {
@@ -51,10 +59,33 @@ interface Stats {
   };
 }
 
+interface ModelInfo {
+  id: string;
+  provider: string;
+  name: string;
+  description: string;
+  inputCostPerMillion: number;
+  outputCostPerMillion: number;
+  available: boolean;
+  recommended?: boolean;
+}
+
+interface CostEstimate {
+  totalEmails: number;
+  estimatedCost: number;
+  costPerEmail: number;
+  formattedCost: string;
+}
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [activeJobs, setActiveJobs] = useState<JobProgress[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Model selection state
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string>("");
+  const [costEstimates, setCostEstimates] = useState<Record<string, CostEstimate>>({});
 
   const fetchStats = useCallback(async () => {
     try {
@@ -102,9 +133,28 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const fetchModels = useCallback(async () => {
+    try {
+      // Fetch models with cost estimates for pending emails
+      const res = await fetch("/api/models");
+      const data = await res.json();
+
+      setModels(data.models || []);
+      setCostEstimates(data.costEstimates || {});
+
+      // Set default model if not already set
+      if (!selectedModelId && data.defaultModelId) {
+        setSelectedModelId(data.defaultModelId);
+      }
+    } catch (error) {
+      console.error("Failed to fetch models:", error);
+    }
+  }, [selectedModelId]);
+
   useEffect(() => {
     fetchStats();
     fetchActiveJobs();
+    fetchModels();
 
     // Poll for active jobs
     const interval = setInterval(() => {
@@ -112,32 +162,24 @@ export default function DashboardPage() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [fetchStats, fetchActiveJobs]);
-
-  const startScanJob = async () => {
-    try {
-      const res = await fetch("/api/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "email_scan" }),
-      });
-      const data = await res.json();
-      toast.success("Email scan job started");
-      fetchActiveJobs();
-    } catch (error) {
-      toast.error("Failed to start scan job");
-    }
-  };
+  }, [fetchStats, fetchActiveJobs, fetchModels]);
 
   const startExtractionJob = async () => {
     try {
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "extraction", options: { concurrency: 3 } }),
+        body: JSON.stringify({
+          type: "extraction",
+          options: {
+            modelId: selectedModelId,
+            concurrency: 3,
+          },
+        }),
       });
       const data = await res.json();
-      toast.success("Extraction job started");
+      const model = models.find((m) => m.id === selectedModelId);
+      toast.success(`Extraction started with ${model?.name || selectedModelId}`);
       fetchActiveJobs();
     } catch (error) {
       toast.error("Failed to start extraction job");
@@ -172,28 +214,115 @@ export default function DashboardPage() {
         </div>
 
         {/* Quick Actions */}
-        <div className="flex gap-4 mb-8">
-          <Button onClick={startScanJob} className="gap-2">
-            <Play className="h-4 w-4" />
-            Scan Emails Folder
-          </Button>
-          <Button
-            onClick={startExtractionJob}
-            variant="outline"
-            className="gap-2"
-            disabled={!stats || stats.emails.pending === 0}
-          >
-            <RefreshCw className="h-4 w-4" />
-            Extract Transactions
-            {stats && stats.emails.pending > 0 && (
-              <Badge variant="secondary">{stats.emails.pending} pending</Badge>
-            )}
-          </Button>
-          <Button variant="outline" onClick={fetchStats} className="gap-2">
-            <RefreshCw className="h-4 w-4" />
-            Refresh
-          </Button>
-        </div>
+        <Card className="mb-8">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Cpu className="h-5 w-5" />
+              Start Extraction
+            </CardTitle>
+            <CardDescription>
+              Select an AI model and process pending emails
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap items-end gap-4">
+              {/* Model Selector */}
+              <div className="flex-1 min-w-[250px] max-w-md space-y-2">
+                <label className="text-sm font-medium text-gray-700">AI Model</label>
+                <Select value={selectedModelId} onValueChange={setSelectedModelId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {/* Anthropic Models */}
+                    <div className="px-2 py-1 text-xs font-semibold text-gray-500 bg-gray-50">
+                      Anthropic
+                    </div>
+                    {models
+                      .filter((m) => m.provider === "anthropic")
+                      .map((model) => (
+                        <SelectItem
+                          key={model.id}
+                          value={model.id}
+                          disabled={!model.available}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span>{model.name}</span>
+                            {model.recommended && (
+                              <Badge variant="secondary" className="text-xs">Recommended</Badge>
+                            )}
+                            {!model.available && (
+                              <Badge variant="outline" className="text-xs text-orange-600">No API key</Badge>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    {/* OpenAI Models */}
+                    <div className="px-2 py-1 text-xs font-semibold text-gray-500 bg-gray-50 mt-1">
+                      OpenAI
+                    </div>
+                    {models
+                      .filter((m) => m.provider === "openai")
+                      .map((model) => (
+                        <SelectItem
+                          key={model.id}
+                          value={model.id}
+                          disabled={!model.available}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span>{model.name}</span>
+                            {!model.available && (
+                              <Badge variant="outline" className="text-xs text-orange-600">No API key</Badge>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                {/* Model description */}
+                {selectedModelId && (
+                  <p className="text-xs text-gray-500">
+                    {models.find((m) => m.id === selectedModelId)?.description}
+                  </p>
+                )}
+              </div>
+
+              {/* Cost Estimate */}
+              {costEstimates[selectedModelId] && stats?.emails.pending && stats.emails.pending > 0 && (
+                <div className="flex items-center gap-2 p-3 bg-green-50 rounded-lg border border-green-200">
+                  <DollarSign className="h-5 w-5 text-green-600" />
+                  <div className="text-sm">
+                    <div className="font-medium text-green-800">
+                      Est. Cost: {costEstimates[selectedModelId].formattedCost}
+                    </div>
+                    <div className="text-xs text-green-600">
+                      {stats.emails.pending} emails @ ~${costEstimates[selectedModelId].costPerEmail.toFixed(4)}/email
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Start Button */}
+              <Button
+                onClick={startExtractionJob}
+                className="gap-2"
+                disabled={!stats || stats.emails.pending === 0 || !selectedModelId}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Extract Transactions
+                {stats && stats.emails.pending > 0 && (
+                  <Badge variant="secondary">{stats.emails.pending} pending</Badge>
+                )}
+              </Button>
+
+              {/* Refresh Button */}
+              <Button variant="outline" onClick={() => { fetchStats(); fetchModels(); }} className="gap-2">
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Active Jobs */}
         {activeJobs.length > 0 && (
@@ -369,11 +498,7 @@ export default function DashboardPage() {
             <CardContent>
               <ol className="list-decimal list-inside space-y-2 text-gray-600">
                 <li>
-                  Place your .eml email files in the <code>emails/</code> folder
-                </li>
-                <li>
-                  Click <strong>Scan Emails Folder</strong> to import emails
-                  into the database
+                  Go to the <strong>Emails</strong> page and upload your .eml or .zip files
                 </li>
                 <li>
                   Click <strong>Extract Transactions</strong> to process emails

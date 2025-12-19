@@ -51,10 +51,10 @@ export async function POST(request: NextRequest) {
     }
 
     const files = formData.getAll("files") as File[];
-    const setId = formData.get("setId") as string | null;
-    const newSetName = formData.get("newSetName") as string | null;
+    const setName = formData.get("setName") as string | null;
+    const existingSetId = formData.get("setId") as string | null;
 
-    console.log(`Received ${files.length} files for upload, setId: ${setId}, newSetName: ${newSetName}`);
+    console.log(`Received ${files.length} files for upload, setName: ${setName}, setId: ${existingSetId}`);
 
     // Collect all email files (extract from zips if needed)
     const emailFiles: EmailFile[] = [];
@@ -77,28 +77,19 @@ export async function POST(request: NextRequest) {
 
     console.log(`Total email files to process: ${emailFiles.length}`);
 
-    // Determine which set to use - all emails must belong to a set
+    // Use existing set (for batch uploads) or create a new one
     let targetSetId: string;
     let createdSet: { id: string; name: string } | null = null;
 
-    if (newSetName && newSetName.trim()) {
-      // Create a new set with user-provided name
-      const newSet = {
-        id: uuid(),
-        name: newSetName.trim(),
-      };
-      await db.insert(emailSets).values(newSet);
-      targetSetId = newSet.id;
-      createdSet = newSet;
-    } else if (setId && setId !== "none") {
-      // Use existing set
-      targetSetId = setId;
+    if (existingSetId) {
+      // Use existing set (typically for subsequent batches in multi-batch upload)
+      targetSetId = existingSetId;
     } else {
-      // Auto-create a set with timestamp
+      // Create a new set for this upload
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const newSet = {
         id: uuid(),
-        name: `Upload ${timestamp}`,
+        name: setName?.trim() || `Upload ${timestamp}`,
       };
       await db.insert(emailSets).values(newSet);
       targetSetId = newSet.id;

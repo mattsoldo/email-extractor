@@ -3,8 +3,9 @@ import { db } from "@/db";
 import { jobs, emails, transactions, accounts, extractionLogs, extractionRuns } from "@/db/schema";
 import { eq, and, inArray, desc, sql } from "drizzle-orm";
 import { scanEmailDirectory, parseEmlFile, toDbEmail, classifyEmail } from "./email-parser";
-import { extractTransaction, type TransactionExtraction, MODEL_ID } from "./ai-extractor";
+import { extractTransaction, type TransactionExtraction, DEFAULT_MODEL_ID } from "./ai-extractor";
 import { normalizeTransaction, detectOrCreateAccount } from "./transaction-normalizer";
+import { estimateBatchCost, formatCost, getModelConfig } from "./model-config";
 
 export type JobType = "email_scan" | "extraction" | "reprocess";
 export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -263,6 +264,8 @@ async function runEmailScanJob(
 export async function startExtractionJob(
   options: {
     emailIds?: string[]; // Specific emails to process, or all pending if not provided
+    setId?: string; // Filter to emails in this set
+    modelId?: string; // AI model to use (defaults to DEFAULT_MODEL_ID)
     concurrency?: number;
   } = {}
 ): Promise<string> {
@@ -301,6 +304,8 @@ async function runExtractionJob(
   jobId: string,
   options: {
     emailIds?: string[];
+    setId?: string;
+    modelId?: string;
     concurrency?: number;
   },
   signal: AbortSignal
@@ -309,6 +314,8 @@ async function runExtractionJob(
   job.progress.status = "running";
   job.progress.startedAt = new Date();
   const startTime = Date.now();
+
+  const modelId = options.modelId || DEFAULT_MODEL_ID;
 
   await db
     .update(jobs)
@@ -330,7 +337,7 @@ async function runExtractionJob(
     id: extractionRunId,
     jobId,
     version: nextVersion,
-    modelId: MODEL_ID,
+    modelId,
     config: options,
     status: "running",
     startedAt: new Date(),
@@ -351,6 +358,17 @@ async function runExtractionJob(
         .select()
         .from(emails)
         .where(inArray(emails.id, options.emailIds));
+    } else if (options.setId) {
+      // Get pending emails from specific set
+      emailsToProcess = await db
+        .select()
+        .from(emails)
+        .where(
+          and(
+            eq(emails.setId, options.setId),
+            eq(emails.extractionStatus, "pending")
+          )
+        );
     } else {
       emailsToProcess = await db
         .select()
@@ -397,7 +415,7 @@ async function runExtractionJob(
             headers: (email.headers as Record<string, string>) || {},
           };
 
-          const extraction = await extractTransaction(parsedEmail);
+          const extraction = await extractTransaction(parsedEmail, modelId);
 
           return { email, extraction };
         })

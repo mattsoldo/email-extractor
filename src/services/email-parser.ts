@@ -7,13 +7,28 @@ import type { NewEmail } from "@/db/schema";
 export interface ParsedEmail {
   id: string;
   filename: string;
+
+  // Structured header fields
   subject: string | null;
-  sender: string | null;
-  recipient: string | null;
-  date: Date | null;
+  sender: string | null; // Email address
+  senderName: string | null; // Display name
+  recipient: string | null; // Email address
+  recipientName: string | null; // Display name
+  cc: string | null; // Comma-separated CC addresses
+  replyTo: string | null;
+  messageId: string | null;
+  inReplyTo: string | null;
+
+  // Date fields
+  date: Date | null; // Date header
+  receivedAt: Date | null; // First Received header timestamp
+
+  // Body content
   bodyText: string | null;
   bodyHtml: string | null;
   rawContent: string | null; // Original .eml file content
+
+  // Additional headers (for anything not in structured fields)
   headers: Record<string, string>;
 }
 
@@ -31,8 +46,15 @@ export async function parseEmlFile(filePath: string): Promise<ParsedEmail> {
     filename,
     subject: parsed.subject || null,
     sender: extractEmailAddress(parsed.from),
+    senderName: extractDisplayName(parsed.from),
     recipient: extractEmailAddress(parsed.to),
+    recipientName: extractDisplayName(parsed.to),
+    cc: extractAllAddresses(parsed.cc),
+    replyTo: extractEmailAddress(parsed.replyTo),
+    messageId: parsed.messageId || null,
+    inReplyTo: parsed.inReplyTo || null,
     date: parsed.date || null,
+    receivedAt: extractReceivedDate(parsed),
     bodyText: parsed.text || null,
     bodyHtml: parsed.html || null,
     rawContent: content.toString("utf-8"),
@@ -57,8 +79,15 @@ export async function parseEmlContent(
     filename,
     subject: parsed.subject || null,
     sender: extractEmailAddress(parsed.from),
+    senderName: extractDisplayName(parsed.from),
     recipient: extractEmailAddress(parsed.to),
+    recipientName: extractDisplayName(parsed.to),
+    cc: extractAllAddresses(parsed.cc),
+    replyTo: extractEmailAddress(parsed.replyTo),
+    messageId: parsed.messageId || null,
+    inReplyTo: parsed.inReplyTo || null,
     date: parsed.date || null,
+    receivedAt: extractReceivedDate(parsed),
     bodyText: parsed.text || null,
     bodyHtml: parsed.html || null,
     rawContent,
@@ -70,7 +99,7 @@ export async function parseEmlContent(
  * Extract email address from parsed address object
  */
 function extractEmailAddress(
-  addressField: ParsedMail["from"] | ParsedMail["to"]
+  addressField: ParsedMail["from"] | ParsedMail["to"] | ParsedMail["replyTo"]
 ): string | null {
   if (!addressField) return null;
 
@@ -83,6 +112,84 @@ function extractEmailAddress(
 
   if ("value" in addressField && Array.isArray(addressField.value)) {
     return addressField.value[0]?.address || null;
+  }
+
+  return null;
+}
+
+/**
+ * Extract display name from parsed address object
+ */
+function extractDisplayName(
+  addressField: ParsedMail["from"] | ParsedMail["to"]
+): string | null {
+  if (!addressField) return null;
+
+  if (Array.isArray(addressField)) {
+    const first = addressField[0];
+    if (first && "value" in first && Array.isArray(first.value)) {
+      return first.value[0]?.name || null;
+    }
+  }
+
+  if ("value" in addressField && Array.isArray(addressField.value)) {
+    return addressField.value[0]?.name || null;
+  }
+
+  return null;
+}
+
+/**
+ * Extract all email addresses from an address field (for CC, etc.)
+ * Returns comma-separated string of addresses
+ */
+function extractAllAddresses(
+  addressField: ParsedMail["cc"]
+): string | null {
+  if (!addressField) return null;
+
+  const addresses: string[] = [];
+
+  if (Array.isArray(addressField)) {
+    for (const addr of addressField) {
+      if (addr && "value" in addr && Array.isArray(addr.value)) {
+        for (const v of addr.value) {
+          if (v.address) addresses.push(v.address);
+        }
+      }
+    }
+  } else if ("value" in addressField && Array.isArray(addressField.value)) {
+    for (const v of addressField.value) {
+      if (v.address) addresses.push(v.address);
+    }
+  }
+
+  return addresses.length > 0 ? addresses.join(", ") : null;
+}
+
+/**
+ * Extract the received date from the first Received header
+ * This represents when the email was actually received by the server
+ */
+function extractReceivedDate(parsed: ParsedMail): Date | null {
+  if (!parsed.headers) return null;
+
+  // Get the first Received header (most recent)
+  const received = parsed.headers.get("received");
+  if (!received) return null;
+
+  // Received header format typically ends with a date like:
+  // "from ... by ... ; Mon, 15 Jan 2024 10:30:00 -0500"
+  const receivedStr = typeof received === "string" ? received : String(received);
+
+  // Try to find and parse the date portion after the semicolon
+  const semicolonIndex = receivedStr.lastIndexOf(";");
+  if (semicolonIndex !== -1) {
+    const dateStr = receivedStr.substring(semicolonIndex + 1).trim();
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      return date;
+    }
   }
 
   return null;
@@ -133,14 +240,30 @@ export function toDbEmail(parsed: ParsedEmail): NewEmail {
   return {
     id: parsed.id,
     filename: parsed.filename,
+
+    // Structured header fields
     subject: parsed.subject,
     sender: parsed.sender,
+    senderName: parsed.senderName,
     recipient: parsed.recipient,
+    recipientName: parsed.recipientName,
+    cc: parsed.cc,
+    replyTo: parsed.replyTo,
+    messageId: parsed.messageId,
+    inReplyTo: parsed.inReplyTo,
+
+    // Date fields
     date: parsed.date,
+    receivedAt: parsed.receivedAt,
+
+    // Body content
     bodyText: parsed.bodyText,
     bodyHtml: parsed.bodyHtml,
     rawContent: parsed.rawContent,
+
+    // Additional headers
     headers: parsed.headers,
+
     extractionStatus: "pending",
   };
 }

@@ -123,14 +123,31 @@ export const emails = pgTable("emails", {
   contentHash: text("content_hash").unique(), // SHA-256 hash of raw content for deduplication
   setId: text("set_id").references(() => emailSets.id), // Optional set membership
   filename: text("filename").notNull(),
+
+  // Structured header fields (extracted via mailparser, not AI)
   subject: text("subject"),
-  sender: text("sender"),
-  recipient: text("recipient"),
-  date: timestamp("date"),
+  sender: text("sender"), // Email address from From header
+  senderName: text("sender_name"), // Display name from From header
+  recipient: text("recipient"), // Email address from To header
+  recipientName: text("recipient_name"), // Display name from To header
+  cc: text("cc"), // CC recipients (comma-separated addresses)
+  replyTo: text("reply_to"), // Reply-To address
+  messageId: text("message_id"), // Unique Message-ID header
+  inReplyTo: text("in_reply_to"), // In-Reply-To header for threading
+
+  // Date/time fields
+  date: timestamp("date"), // Date header (when email was composed)
+  receivedAt: timestamp("received_at"), // First Received header (when server received it)
+
+  // Body content
   bodyText: text("body_text"),
   bodyHtml: text("body_html"),
   rawContent: text("raw_content"), // Original .eml file content
+
+  // Legacy headers JSON (for any additional headers not in structured columns)
   headers: jsonb("headers").$type<Record<string, string>>(),
+
+  // Extraction status and results
   extractionStatus: extractionStatusEnum("extraction_status")
     .default("pending")
     .notNull(),

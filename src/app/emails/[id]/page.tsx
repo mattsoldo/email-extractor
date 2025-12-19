@@ -22,7 +22,10 @@ import {
   Ban,
   Info,
   Loader2,
+  Trophy,
+  Cpu,
 } from "lucide-react";
+import { toast } from "sonner";
 
 interface Email {
   id: string;
@@ -39,6 +42,7 @@ interface Email {
   skipReason: string | null;
   informationalNotes: string | null;
   rawExtraction: Record<string, unknown> | null;
+  winnerTransactionId: string | null;
 }
 
 interface Transaction {
@@ -47,6 +51,17 @@ interface Transaction {
   date: string;
   amount: string | null;
   symbol: string | null;
+  quantity: string | null;
+  price: string | null;
+  confidence: string | null;
+  extractionRunId: string | null;
+}
+
+interface ExtractionRun {
+  id: string;
+  modelId: string | null;
+  version: number;
+  startedAt: string;
 }
 
 export default function EmailViewerPage() {
@@ -56,23 +71,30 @@ export default function EmailViewerPage() {
 
   const [email, setEmail] = useState<Email | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [runs, setRuns] = useState<ExtractionRun[]>([]);
+  const [transactionsByRun, setTransactionsByRun] = useState<Record<string, Transaction[]>>({});
+  const [winnerTransactionId, setWinnerTransactionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("rendered");
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  useEffect(() => {
-    async function fetchEmail() {
-      try {
-        const res = await fetch(`/api/emails/${emailId}`);
-        const data = await res.json();
-        setEmail(data.email);
-        setTransactions(data.transactions || []);
-      } catch (error) {
-        console.error("Failed to fetch email:", error);
-      } finally {
-        setLoading(false);
-      }
+  const fetchEmail = async () => {
+    try {
+      const res = await fetch(`/api/emails/${emailId}`);
+      const data = await res.json();
+      setEmail(data.email);
+      setTransactions(data.transactions || []);
+      setRuns(data.runs || []);
+      setTransactionsByRun(data.transactionsByRun || {});
+      setWinnerTransactionId(data.winnerTransactionId || null);
+    } catch (error) {
+      console.error("Failed to fetch email:", error);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  useEffect(() => {
     fetchEmail();
   }, [emailId]);
 
@@ -150,14 +172,37 @@ export default function EmailViewerPage() {
   const handleReprocess = async () => {
     try {
       await fetch(`/api/emails/${emailId}`, { method: "POST" });
-      // Refresh email data
-      const res = await fetch(`/api/emails/${emailId}`);
-      const data = await res.json();
-      setEmail(data.email);
-      setTransactions(data.transactions || []);
+      fetchEmail();
     } catch (error) {
       console.error("Failed to reprocess:", error);
     }
+  };
+
+  const setWinner = async (transactionId: string | null) => {
+    try {
+      const res = await fetch(`/api/emails/${emailId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ winnerTransactionId: transactionId }),
+      });
+      if (res.ok) {
+        setWinnerTransactionId(transactionId);
+        toast.success(transactionId ? "Winner transaction set" : "Winner cleared");
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to set winner");
+      }
+    } catch (error) {
+      console.error("Failed to set winner:", error);
+      toast.error("Failed to set winner");
+    }
+  };
+
+  const getRunLabel = (runId: string) => {
+    const run = runs.find((r) => r.id === runId);
+    if (!run) return `Run ${runId.slice(0, 8)}`;
+    const modelName = run.modelId?.split("-").slice(0, 2).join(" ") || "Unknown model";
+    return `v${run.version} - ${modelName}`;
   };
 
   if (loading) {
@@ -323,38 +368,155 @@ export default function EmailViewerPage() {
           </CardContent>
         </Card>
 
-        {/* Extracted Transactions */}
+        {/* Extracted Transactions - Grouped by Run */}
         {transactions.length > 0 && (
           <Card>
             <div className="p-4 border-b">
-              <h2 className="font-semibold text-gray-900">Extracted Transactions</h2>
+              <div className="flex items-center justify-between">
+                <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+                  <Cpu className="h-5 w-5" />
+                  Extracted Transactions
+                </h2>
+                {transactions.length > 1 && (
+                  <div className="text-sm text-gray-500">
+                    {Object.keys(transactionsByRun).length} extraction run(s)
+                  </div>
+                )}
+              </div>
+              {winnerTransactionId && (
+                <div className="mt-2 flex items-center gap-2 text-sm text-green-700">
+                  <Trophy className="h-4 w-4" />
+                  Winner selected - this will be used as the canonical transaction
+                </div>
+              )}
             </div>
             <CardContent className="p-4">
-              <div className="space-y-2">
-                {transactions.map((tx) => (
-                  <div
-                    key={tx.id}
-                    className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-                  >
-                    <div className="flex items-center gap-3">
-                      <Badge variant="secondary">{tx.type}</Badge>
-                      {tx.symbol && (
-                        <span className="font-medium text-gray-900">{tx.symbol}</span>
-                      )}
+              {Object.entries(transactionsByRun).length > 1 ? (
+                // Multiple runs - show grouped
+                <div className="space-y-6">
+                  {Object.entries(transactionsByRun).map(([runId, runTxns]) => (
+                    <div key={runId} className="border rounded-lg overflow-hidden">
+                      <div className="bg-gray-100 px-4 py-2 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Cpu className="h-4 w-4 text-gray-500" />
+                          <span className="font-medium text-sm">{getRunLabel(runId)}</span>
+                        </div>
+                        <Badge variant="outline" className="text-xs">
+                          {runTxns.length} transaction(s)
+                        </Badge>
+                      </div>
+                      <div className="divide-y">
+                        {runTxns.map((tx) => (
+                          <div
+                            key={tx.id}
+                            className={`flex items-center justify-between p-3 ${
+                              tx.id === winnerTransactionId
+                                ? "bg-green-50 border-l-4 border-green-500"
+                                : "hover:bg-gray-50"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              {tx.id === winnerTransactionId ? (
+                                <Trophy className="h-5 w-5 text-green-600" />
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 w-8 p-0 text-gray-400 hover:text-green-600"
+                                  onClick={() => setWinner(tx.id)}
+                                  title="Set as winner"
+                                >
+                                  <Trophy className="h-4 w-4" />
+                                </Button>
+                              )}
+                              <Badge variant="secondary">{tx.type}</Badge>
+                              {tx.symbol && (
+                                <span className="font-medium text-gray-900">{tx.symbol}</span>
+                              )}
+                              {tx.quantity && (
+                                <span className="text-sm text-gray-500">
+                                  x{parseFloat(tx.quantity).toLocaleString()}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-4">
+                              {tx.confidence && (
+                                <span className="text-xs text-gray-500">
+                                  {(parseFloat(tx.confidence) * 100).toFixed(0)}% conf
+                                </span>
+                              )}
+                              {tx.amount && (
+                                <span className="font-medium text-gray-900">
+                                  ${parseFloat(tx.amount).toLocaleString()}
+                                </span>
+                              )}
+                              <span className="text-sm text-gray-500">
+                                {format(new Date(tx.date), "MMM d, yyyy")}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                    <div className="text-right">
-                      {tx.amount && (
-                        <span className="font-medium text-gray-900">
-                          ${parseFloat(tx.amount).toLocaleString()}
+                  ))}
+                  {winnerTransactionId && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setWinner(null)}
+                      className="text-gray-500"
+                    >
+                      Clear winner selection
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                // Single run - simple list
+                <div className="space-y-2">
+                  {transactions.map((tx) => (
+                    <div
+                      key={tx.id}
+                      className={`flex items-center justify-between p-3 rounded-lg ${
+                        tx.id === winnerTransactionId
+                          ? "bg-green-50 border border-green-200"
+                          : "bg-gray-50"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        {transactions.length > 1 && (
+                          tx.id === winnerTransactionId ? (
+                            <Trophy className="h-5 w-5 text-green-600" />
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0 text-gray-400 hover:text-green-600"
+                              onClick={() => setWinner(tx.id)}
+                              title="Set as winner"
+                            >
+                              <Trophy className="h-4 w-4" />
+                            </Button>
+                          )
+                        )}
+                        <Badge variant="secondary">{tx.type}</Badge>
+                        {tx.symbol && (
+                          <span className="font-medium text-gray-900">{tx.symbol}</span>
+                        )}
+                      </div>
+                      <div className="text-right">
+                        {tx.amount && (
+                          <span className="font-medium text-gray-900">
+                            ${parseFloat(tx.amount).toLocaleString()}
+                          </span>
+                        )}
+                        <span className="text-sm text-gray-500 ml-2">
+                          {format(new Date(tx.date), "MMM d, yyyy")}
                         </span>
-                      )}
-                      <span className="text-sm text-gray-500 ml-2">
-                        {format(new Date(tx.date), "MMM d, yyyy")}
-                      </span>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

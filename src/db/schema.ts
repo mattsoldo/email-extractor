@@ -98,6 +98,7 @@ export const emailSets = pgTable("email_sets", {
 // Raw emails storage
 export const emails = pgTable("emails", {
   id: text("id").primaryKey(),
+  contentHash: text("content_hash").unique(), // SHA-256 hash of raw content for deduplication
   setId: text("set_id").references(() => emailSets.id), // Optional set membership
   filename: text("filename").notNull(),
   subject: text("subject"),
@@ -115,6 +116,7 @@ export const emails = pgTable("emails", {
   rawExtraction: jsonb("raw_extraction").$type<Record<string, unknown>>(),
   skipReason: text("skip_reason"), // Why email was skipped (e.g., "marketing")
   informationalNotes: text("informational_notes"), // AI explanation for non-transactional emails
+  winnerTransactionId: text("winner_transaction_id"), // User-selected canonical transaction
   createdAt: timestamp("created_at").defaultNow().notNull(),
   processedAt: timestamp("processed_at"),
 });
@@ -204,10 +206,12 @@ export const jobs = pgTable("jobs", {
 export const extractionRuns = pgTable("extraction_runs", {
   id: text("id").primaryKey(),
   jobId: text("job_id").references(() => jobs.id),
+  setId: text("set_id").references(() => emailSets.id).notNull(), // Which set was extracted
   version: integer("version").notNull(), // Auto-incrementing version number
   name: text("name"), // Optional user-friendly name
   description: text("description"), // Notes about this run
-  modelId: text("model_id"), // Which AI model was used (e.g., "claude-sonnet-4-20250514")
+  modelId: text("model_id").notNull(), // Which AI model was used
+  softwareVersion: text("software_version").notNull(), // Which version of our software was used
   emailsProcessed: integer("emails_processed").default(0),
   transactionsCreated: integer("transactions_created").default(0),
   informationalCount: integer("informational_count").default(0),
@@ -264,11 +268,16 @@ export const extractionRunsRelations = relations(extractionRuns, ({ one, many })
     fields: [extractionRuns.jobId],
     references: [jobs.id],
   }),
+  set: one(emailSets, {
+    fields: [extractionRuns.setId],
+    references: [emailSets.id],
+  }),
   transactions: many(transactions),
 }));
 
 export const emailSetsRelations = relations(emailSets, ({ many }) => ({
   emails: many(emails),
+  extractionRuns: many(extractionRuns),
 }));
 
 export const emailsRelations = relations(emails, ({ one, many }) => ({
@@ -277,6 +286,10 @@ export const emailsRelations = relations(emails, ({ one, many }) => ({
     references: [emailSets.id],
   }),
   transactions: many(transactions),
+  winnerTransaction: one(transactions, {
+    fields: [emails.winnerTransactionId],
+    references: [transactions.id],
+  }),
 }));
 
 // Type exports for use in application code

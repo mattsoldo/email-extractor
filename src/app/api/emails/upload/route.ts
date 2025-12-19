@@ -6,6 +6,12 @@ import { parseEmlContent, toDbEmail, classifyEmail } from "@/services/email-pars
 import { eq } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import JSZip from "jszip";
+import { createHash } from "crypto";
+
+// Compute SHA-256 hash of email content for deduplication
+function computeContentHash(content: Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
+}
 
 // Configure for file uploads - increase body size limit
 export const runtime = "nodejs";
@@ -106,19 +112,40 @@ export async function POST(request: NextRequest) {
     const results = {
       uploaded: 0,
       skipped: 0,
+      duplicates: 0,
       failed: 0,
       details: [] as Array<{
         filename: string;
-        status: "uploaded" | "skipped" | "failed";
+        status: "uploaded" | "skipped" | "duplicate" | "failed";
         reason?: string;
         emailId?: string;
+        existingEmailId?: string;
       }>,
     };
 
     for (const emailFile of emailFiles) {
       try {
-        // Note: We now allow duplicate filenames across different sets
-        // This enables testing the same emails in multiple sets
+        // Compute content hash for deduplication
+        const contentHash = computeContentHash(emailFile.content);
+
+        // Check if this email already exists (by content hash)
+        const existingEmail = await db
+          .select({ id: emails.id, subject: emails.subject })
+          .from(emails)
+          .where(eq(emails.contentHash, contentHash))
+          .limit(1);
+
+        if (existingEmail.length > 0) {
+          // Email already exists - skip as duplicate
+          results.duplicates++;
+          results.details.push({
+            filename: emailFile.filename,
+            status: "duplicate",
+            reason: `Duplicate of existing email (subject: "${existingEmail[0].subject || 'No subject'}")`,
+            existingEmailId: existingEmail[0].id,
+          });
+          continue;
+        }
 
         // Store in Vercel Blob (optional - for backup/reference)
         let blobUrl: string | null = null;
@@ -154,7 +181,8 @@ export async function POST(request: NextRequest) {
           };
         }
 
-        // Add set reference (required)
+        // Add content hash and set reference
+        (dbEmail as Record<string, unknown>).contentHash = contentHash;
         (dbEmail as Record<string, unknown>).setId = targetSetId;
 
         await db.insert(emails).values(dbEmail);

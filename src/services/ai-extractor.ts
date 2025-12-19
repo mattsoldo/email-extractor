@@ -6,7 +6,7 @@ import type { ParsedEmail } from "./email-parser";
 import { getModelConfig, DEFAULT_MODEL_ID, type ModelConfig } from "./model-config";
 
 // Schema for extracted transaction data
-const TransactionExtractionSchema = z.object({
+export const TransactionExtractionSchema = z.object({
   isTransaction: z.boolean().describe("Whether this email contains a financial transaction"),
   transactionType: z
     .enum([
@@ -204,7 +204,7 @@ COMMON PATTERNS TO RECOGNIZE:
 /**
  * Prepare email content for extraction - prefer text, fall back to HTML stripped
  */
-function prepareEmailContent(email: ParsedEmail): string {
+export function prepareEmailContent(email: ParsedEmail): string {
   if (email.bodyText && email.bodyText.trim().length > 100) {
     return email.bodyText;
   }
@@ -220,7 +220,7 @@ function prepareEmailContent(email: ParsedEmail): string {
 /**
  * Strip HTML tags and decode common entities
  */
-function stripHtml(html: string): string {
+export function stripHtml(html: string): string {
   return html
     // Remove script and style elements
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")

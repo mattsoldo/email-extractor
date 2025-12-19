@@ -23,7 +23,7 @@ export interface AccountInput {
 /**
  * Normalize an account number to a consistent format for matching
  */
-function normalizeAccountNumber(accountNumber: string): string {
+export function normalizeAccountNumber(accountNumber: string): string {
   // Remove spaces, dashes, and convert to uppercase
   return accountNumber.replace(/[\s-]/g, "").toUpperCase();
 }
@@ -31,7 +31,7 @@ function normalizeAccountNumber(accountNumber: string): string {
 /**
  * Extract the last 4 digits from an account number
  */
-function extractLast4(accountNumber: string): string | null {
+export function extractLast4(accountNumber: string): string | null {
   const normalized = normalizeAccountNumber(accountNumber);
   // Match pattern like XXXX1234 or just 1234 at the end
   const match = normalized.match(/(\d{4})$/);
@@ -41,7 +41,7 @@ function extractLast4(accountNumber: string): string | null {
 /**
  * Check if two account numbers likely refer to the same account
  */
-function accountNumbersMatch(a: string, b: string): boolean {
+export function accountNumbersMatch(a: string, b: string): boolean {
   const normA = normalizeAccountNumber(a);
   const normB = normalizeAccountNumber(b);
 

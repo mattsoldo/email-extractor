@@ -25,6 +25,9 @@ import {
   XCircle,
   DollarSign,
   Cpu,
+  FolderOpen,
+  Ban,
+  Loader2,
 } from "lucide-react";
 
 interface JobProgress {
@@ -77,6 +80,27 @@ interface CostEstimate {
   formattedCost: string;
 }
 
+interface EmailSet {
+  id: string;
+  name: string;
+  description: string | null;
+  emailCount: number;
+  createdAt: string;
+}
+
+interface EligibilityCheck {
+  eligible: boolean;
+  reason?: string;
+  message: string;
+  emailCount?: number;
+  softwareVersion: string;
+  existingRun?: {
+    id: string;
+    completedAt: string;
+    transactionsCreated: number;
+  };
+}
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [activeJobs, setActiveJobs] = useState<JobProgress[]>([]);
@@ -86,6 +110,12 @@ export default function DashboardPage() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string>("");
   const [costEstimates, setCostEstimates] = useState<Record<string, CostEstimate>>({});
+
+  // Set selection state
+  const [emailSets, setEmailSets] = useState<EmailSet[]>([]);
+  const [selectedSetId, setSelectedSetId] = useState<string>("");
+  const [eligibility, setEligibility] = useState<EligibilityCheck | null>(null);
+  const [checkingEligibility, setCheckingEligibility] = useState(false);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -151,10 +181,40 @@ export default function DashboardPage() {
     }
   }, [selectedModelId]);
 
+  const fetchEmailSets = useCallback(async () => {
+    try {
+      const res = await fetch("/api/email-sets");
+      const data = await res.json();
+      setEmailSets(data.sets || []);
+    } catch (error) {
+      console.error("Failed to fetch email sets:", error);
+    }
+  }, []);
+
+  const checkEligibility = useCallback(async (setId: string, modelId: string) => {
+    if (!setId || !modelId) {
+      setEligibility(null);
+      return;
+    }
+
+    setCheckingEligibility(true);
+    try {
+      const res = await fetch(`/api/extraction-check?setId=${setId}&modelId=${modelId}`);
+      const data = await res.json();
+      setEligibility(data);
+    } catch (error) {
+      console.error("Failed to check eligibility:", error);
+      setEligibility(null);
+    } finally {
+      setCheckingEligibility(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchStats();
     fetchActiveJobs();
     fetchModels();
+    fetchEmailSets();
 
     // Poll for active jobs
     const interval = setInterval(() => {
@@ -162,9 +222,19 @@ export default function DashboardPage() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [fetchStats, fetchActiveJobs, fetchModels]);
+  }, [fetchStats, fetchActiveJobs, fetchModels, fetchEmailSets]);
+
+  // Check eligibility when set or model changes
+  useEffect(() => {
+    checkEligibility(selectedSetId, selectedModelId);
+  }, [selectedSetId, selectedModelId, checkEligibility]);
 
   const startExtractionJob = async () => {
+    if (!selectedSetId || !selectedModelId) {
+      toast.error("Please select both a set and a model");
+      return;
+    }
+
     try {
       const res = await fetch("/api/jobs", {
         method: "POST",
@@ -172,15 +242,25 @@ export default function DashboardPage() {
         body: JSON.stringify({
           type: "extraction",
           options: {
+            setId: selectedSetId,
             modelId: selectedModelId,
             concurrency: 3,
           },
         }),
       });
       const data = await res.json();
+
+      if (!res.ok) {
+        toast.error(data.error || "Failed to start extraction");
+        return;
+      }
+
       const model = models.find((m) => m.id === selectedModelId);
-      toast.success(`Extraction started with ${model?.name || selectedModelId}`);
+      const set = emailSets.find((s) => s.id === selectedSetId);
+      toast.success(`Extraction started for "${set?.name}" with ${model?.name || selectedModelId}`);
       fetchActiveJobs();
+      // Re-check eligibility after starting
+      checkEligibility(selectedSetId, selectedModelId);
     } catch (error) {
       toast.error("Failed to start extraction job");
     }
@@ -221,11 +301,42 @@ export default function DashboardPage() {
               Start Extraction
             </CardTitle>
             <CardDescription>
-              Select an AI model and process pending emails
+              Select an email set and AI model to extract transactions
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex flex-wrap items-end gap-4">
+              {/* Set Selector */}
+              <div className="flex-1 min-w-[200px] max-w-xs space-y-2">
+                <label className="text-sm font-medium text-gray-700 flex items-center gap-1">
+                  <FolderOpen className="h-4 w-4" />
+                  Email Set
+                </label>
+                <Select value={selectedSetId} onValueChange={setSelectedSetId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a set" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {emailSets.length === 0 ? (
+                      <div className="px-2 py-3 text-sm text-gray-500 text-center">
+                        No sets created yet
+                      </div>
+                    ) : (
+                      emailSets.map((set) => (
+                        <SelectItem key={set.id} value={set.id}>
+                          <div className="flex items-center gap-2">
+                            <span>{set.name}</span>
+                            <Badge variant="outline" className="text-xs">
+                              {set.emailCount} emails
+                            </Badge>
+                          </div>
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+
               {/* Model Selector */}
               <div className="flex-1 min-w-[250px] max-w-md space-y-2">
                 <label className="text-sm font-medium text-gray-700">AI Model</label>
@@ -287,8 +398,27 @@ export default function DashboardPage() {
                 )}
               </div>
 
-              {/* Cost Estimate */}
-              {costEstimates[selectedModelId] && stats?.emails.pending && stats.emails.pending > 0 && (
+              {/* Eligibility Status */}
+              {checkingEligibility && (
+                <div className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                  <Loader2 className="h-5 w-5 text-gray-500 animate-spin" />
+                  <span className="text-sm text-gray-600">Checking eligibility...</span>
+                </div>
+              )}
+
+              {!checkingEligibility && eligibility && !eligibility.eligible && (
+                <div className="flex items-center gap-2 p-3 bg-amber-50 rounded-lg border border-amber-200">
+                  <Ban className="h-5 w-5 text-amber-600" />
+                  <div className="text-sm">
+                    <div className="font-medium text-amber-800">Already Extracted</div>
+                    <div className="text-xs text-amber-600">
+                      {eligibility.message}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {!checkingEligibility && eligibility?.eligible && costEstimates[selectedModelId] && (
                 <div className="flex items-center gap-2 p-3 bg-green-50 rounded-lg border border-green-200">
                   <DollarSign className="h-5 w-5 text-green-600" />
                   <div className="text-sm">
@@ -296,7 +426,7 @@ export default function DashboardPage() {
                       Est. Cost: {costEstimates[selectedModelId].formattedCost}
                     </div>
                     <div className="text-xs text-green-600">
-                      {stats.emails.pending} emails @ ~${costEstimates[selectedModelId].costPerEmail.toFixed(4)}/email
+                      {eligibility.emailCount} emails @ ~${costEstimates[selectedModelId].costPerEmail.toFixed(4)}/email
                     </div>
                   </div>
                 </div>
@@ -306,21 +436,33 @@ export default function DashboardPage() {
               <Button
                 onClick={startExtractionJob}
                 className="gap-2"
-                disabled={!stats || stats.emails.pending === 0 || !selectedModelId}
+                disabled={
+                  !selectedSetId ||
+                  !selectedModelId ||
+                  checkingEligibility ||
+                  !eligibility?.eligible
+                }
               >
                 <RefreshCw className="h-4 w-4" />
                 Extract Transactions
-                {stats && stats.emails.pending > 0 && (
-                  <Badge variant="secondary">{stats.emails.pending} pending</Badge>
+                {eligibility?.eligible && eligibility.emailCount && (
+                  <Badge variant="secondary">{eligibility.emailCount} emails</Badge>
                 )}
               </Button>
 
               {/* Refresh Button */}
-              <Button variant="outline" onClick={() => { fetchStats(); fetchModels(); }} className="gap-2">
+              <Button variant="outline" onClick={() => { fetchStats(); fetchModels(); fetchEmailSets(); if (selectedSetId && selectedModelId) checkEligibility(selectedSetId, selectedModelId); }} className="gap-2">
                 <RefreshCw className="h-4 w-4" />
                 Refresh
               </Button>
             </div>
+
+            {/* Version Info */}
+            {eligibility?.softwareVersion && (
+              <div className="mt-3 text-xs text-gray-400">
+                Software version: {eligibility.softwareVersion}
+              </div>
+            )}
           </CardContent>
         </Card>
 

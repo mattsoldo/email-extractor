@@ -6,6 +6,7 @@ import { scanEmailDirectory, parseEmlFile, toDbEmail, classifyEmail } from "./em
 import { extractTransaction, type TransactionExtraction, DEFAULT_MODEL_ID } from "./ai-extractor";
 import { normalizeTransaction, detectOrCreateAccount } from "./transaction-normalizer";
 import { estimateBatchCost, formatCost, getModelConfig } from "./model-config";
+import { SOFTWARE_VERSION } from "@/config/version";
 
 export type JobType = "email_scan" | "extraction" | "reprocess";
 export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -258,17 +259,58 @@ async function runEmailScanJob(
 }
 
 /**
+ * Check if an extraction already exists for this set+model+version combination
+ */
+export async function checkExistingExtraction(
+  setId: string,
+  modelId: string
+): Promise<{ exists: boolean; run?: typeof extractionRuns.$inferSelect }> {
+  const existing = await db
+    .select()
+    .from(extractionRuns)
+    .where(
+      and(
+        eq(extractionRuns.setId, setId),
+        eq(extractionRuns.modelId, modelId),
+        eq(extractionRuns.softwareVersion, SOFTWARE_VERSION),
+        eq(extractionRuns.status, "completed")
+      )
+    )
+    .limit(1);
+
+  return {
+    exists: existing.length > 0,
+    run: existing[0],
+  };
+}
+
+/**
  * Start AI extraction job
- * Processes pending emails through the AI extractor
+ * Processes emails from a specific set through the AI extractor
+ * Results are atomic - transactions are only created if the entire run succeeds
  */
 export async function startExtractionJob(
   options: {
-    emailIds?: string[]; // Specific emails to process, or all pending if not provided
-    setId?: string; // Filter to emails in this set
+    setId: string; // Required - which set to extract
     modelId?: string; // AI model to use (defaults to DEFAULT_MODEL_ID)
     concurrency?: number;
-  } = {}
+  }
 ): Promise<string> {
+  if (!options.setId) {
+    throw new Error("setId is required for extraction");
+  }
+
+  const modelId = options.modelId || DEFAULT_MODEL_ID;
+
+  // Check if this combination already exists
+  const { exists, run } = await checkExistingExtraction(options.setId, modelId);
+  if (exists) {
+    throw new Error(
+      `Extraction already exists for this set with ${modelId} and software v${SOFTWARE_VERSION}. ` +
+      `Run ID: ${run?.id}`
+    );
+  }
+
   const jobId = uuid();
   const abortController = new AbortController();
 
@@ -292,7 +334,7 @@ export async function startExtractionJob(
     id: jobId,
     type: "extraction",
     status: "pending",
-    metadata: options,
+    metadata: { ...options, softwareVersion: SOFTWARE_VERSION },
   });
 
   runExtractionJob(jobId, options, abortController.signal);
@@ -300,11 +342,16 @@ export async function startExtractionJob(
   return jobId;
 }
 
+// Type for pending transaction data collected during extraction
+interface PendingTransaction {
+  emailId: string;
+  extraction: TransactionExtraction;
+}
+
 async function runExtractionJob(
   jobId: string,
   options: {
-    emailIds?: string[];
-    setId?: string;
+    setId: string;
     modelId?: string;
     concurrency?: number;
   },
@@ -316,6 +363,7 @@ async function runExtractionJob(
   const startTime = Date.now();
 
   const modelId = options.modelId || DEFAULT_MODEL_ID;
+  const setId = options.setId;
 
   await db
     .update(jobs)
@@ -336,8 +384,10 @@ async function runExtractionJob(
   await db.insert(extractionRuns).values({
     id: extractionRunId,
     jobId,
+    setId,
     version: nextVersion,
     modelId,
+    softwareVersion: SOFTWARE_VERSION,
     config: options,
     status: "running",
     startedAt: new Date(),
@@ -350,31 +400,23 @@ async function runExtractionJob(
     transactionCount: 0,
   };
 
+  // Collect all pending transactions for atomic insert at the end
+  const pendingTransactions: PendingTransaction[] = [];
+  // Track email updates to apply atomically
+  const emailUpdates: Array<{
+    id: string;
+    status: "completed" | "informational" | "failed";
+    extraction?: Record<string, unknown>;
+    notes?: string;
+    error?: string;
+  }> = [];
+
   try {
-    // Get emails to process
-    let emailsToProcess;
-    if (options.emailIds && options.emailIds.length > 0) {
-      emailsToProcess = await db
-        .select()
-        .from(emails)
-        .where(inArray(emails.id, options.emailIds));
-    } else if (options.setId) {
-      // Get pending emails from specific set
-      emailsToProcess = await db
-        .select()
-        .from(emails)
-        .where(
-          and(
-            eq(emails.setId, options.setId),
-            eq(emails.extractionStatus, "pending")
-          )
-        );
-    } else {
-      emailsToProcess = await db
-        .select()
-        .from(emails)
-        .where(eq(emails.extractionStatus, "pending"));
-    }
+    // Get ALL emails from the set (not just pending)
+    const emailsToProcess = await db
+      .select()
+      .from(emails)
+      .where(eq(emails.setId, setId));
 
     job.progress.totalItems = emailsToProcess.length;
 
@@ -385,7 +427,7 @@ async function runExtractionJob(
 
     const concurrency = options.concurrency || 3;
 
-    // Process in batches
+    // Process in batches - collect results but don't commit yet
     for (let i = 0; i < emailsToProcess.length; i += concurrency) {
       if (signal.aborted) {
         throw new Error("Job cancelled");
@@ -395,12 +437,6 @@ async function runExtractionJob(
 
       const results = await Promise.allSettled(
         batch.map(async (email) => {
-          // Mark as processing
-          await db
-            .update(emails)
-            .set({ extractionStatus: "processing" })
-            .where(eq(emails.id, email.id));
-
           // Extract transaction
           const parsedEmail = {
             id: email.id,
@@ -421,7 +457,7 @@ async function runExtractionJob(
         })
       );
 
-      // Process results
+      // Collect results (don't commit to DB yet)
       for (let j = 0; j < results.length; j++) {
         const result = results[j];
         const email = batch[j];
@@ -430,48 +466,26 @@ async function runExtractionJob(
           const { extraction } = result.value;
 
           if (extraction.isTransaction && extraction.transactionType) {
-            // This is a valid financial transaction
-            await db
-              .update(emails)
-              .set({
-                extractionStatus: "completed",
-                rawExtraction: extraction as Record<string, unknown>,
-                processedAt: new Date(),
-              })
-              .where(eq(emails.id, email.id));
+            // This is a valid financial transaction - collect for later
+            pendingTransactions.push({ emailId: email.id, extraction });
+            emailUpdates.push({
+              id: email.id,
+              status: "completed",
+              extraction: extraction as Record<string, unknown>,
+            });
 
-            try {
-              await createTransactionFromExtraction(email.id, extraction, extractionRunId);
-
-              // Track stats for this run
-              runStats.transactionCount++;
-              runStats.byType[extraction.transactionType] = (runStats.byType[extraction.transactionType] || 0) + 1;
-              runStats.totalConfidence += extraction.confidence || 0;
-            } catch (txError) {
-              console.error(
-                `Failed to create transaction for email ${email.id}:`,
-                txError
-              );
-              // Log the transaction creation error but don't mark email as failed
-              await logExtractionError(
-                email.id,
-                jobId,
-                txError instanceof Error ? txError : new Error(String(txError)),
-                "warning"
-              );
-            }
+            // Track stats
+            runStats.transactionCount++;
+            runStats.byType[extraction.transactionType] = (runStats.byType[extraction.transactionType] || 0) + 1;
+            runStats.totalConfidence += extraction.confidence || 0;
           } else {
             // Not a transaction - mark as informational
-            await db
-              .update(emails)
-              .set({
-                extractionStatus: "informational",
-                rawExtraction: extraction as Record<string, unknown>,
-                informationalNotes: extraction.extractionNotes || "Non-transactional email",
-                processedAt: new Date(),
-              })
-              .where(eq(emails.id, email.id));
-
+            emailUpdates.push({
+              id: email.id,
+              status: "informational",
+              extraction: extraction as Record<string, unknown>,
+              notes: extraction.extractionNotes || "Non-transactional email",
+            });
             job.progress.informationalItems++;
           }
 
@@ -480,24 +494,21 @@ async function runExtractionJob(
           // Handle API/extraction failure
           const error = result.reason as Error;
 
-          // Log the error for debugging
+          // Log the error
           await logExtractionError(email.id, jobId, error, "error");
 
-          await db
-            .update(emails)
-            .set({
-              extractionStatus: "failed",
-              extractionError: error.message,
-              processedAt: new Date(),
-            })
-            .where(eq(emails.id, email.id));
+          emailUpdates.push({
+            id: email.id,
+            status: "failed",
+            error: error.message,
+          });
 
           job.progress.failedItems++;
           job.progress.processedItems++;
         }
       }
 
-      // Update job progress
+      // Update job progress (but not email statuses yet)
       await db
         .update(jobs)
         .set({
@@ -508,41 +519,116 @@ async function runExtractionJob(
         .where(eq(jobs.id, jobId));
     }
 
+    // All extractions complete - now commit atomically using a database transaction
+    console.log(`Extraction complete. Committing ${pendingTransactions.length} transactions atomically...`);
+
+    const processingTimeMs = Date.now() - startTime;
+
+    // Use database transaction for true atomicity
+    await db.transaction(async (tx) => {
+      // Create all transactions
+      for (const pending of pendingTransactions) {
+        const fromAccount = await detectOrCreateAccount({
+          accountNumber: pending.extraction.accountNumber,
+          accountName: pending.extraction.accountName,
+          institution: pending.extraction.institution,
+        });
+
+        let toAccount = null;
+        if (pending.extraction.toAccountNumber || pending.extraction.toAccountName) {
+          toAccount = await detectOrCreateAccount({
+            accountNumber: pending.extraction.toAccountNumber,
+            accountName: pending.extraction.toAccountName,
+            institution: pending.extraction.toInstitution,
+            isExternal:
+              pending.extraction.transactionType === "wire_transfer_out" ||
+              pending.extraction.transactionType === "wire_transfer_in",
+          });
+        }
+
+        const normalizedTx = normalizeTransaction(pending.extraction, fromAccount?.id, toAccount?.id);
+
+        await tx.insert(transactions).values({
+          ...normalizedTx,
+          sourceEmailId: pending.emailId,
+          extractionRunId,
+        });
+      }
+
+      // Update all email statuses within the same transaction
+      for (const update of emailUpdates) {
+        if (update.status === "completed") {
+          await tx
+            .update(emails)
+            .set({
+              extractionStatus: "completed",
+              rawExtraction: update.extraction,
+              processedAt: new Date(),
+            })
+            .where(eq(emails.id, update.id));
+        } else if (update.status === "informational") {
+          await tx
+            .update(emails)
+            .set({
+              extractionStatus: "informational",
+              rawExtraction: update.extraction,
+              informationalNotes: update.notes,
+              processedAt: new Date(),
+            })
+            .where(eq(emails.id, update.id));
+        } else if (update.status === "failed") {
+          await tx
+            .update(emails)
+            .set({
+              extractionStatus: "failed",
+              extractionError: update.error,
+              processedAt: new Date(),
+            })
+            .where(eq(emails.id, update.id));
+        }
+      }
+
+      // Update extraction run with final stats
+      await tx
+        .update(extractionRuns)
+        .set({
+          status: "completed",
+          completedAt: new Date(),
+          emailsProcessed: job.progress.processedItems,
+          transactionsCreated: runStats.transactionCount,
+          informationalCount: job.progress.informationalItems,
+          errorCount: job.progress.failedItems,
+          stats: {
+            byType: runStats.byType,
+            avgConfidence: runStats.transactionCount > 0
+              ? runStats.totalConfidence / runStats.transactionCount
+              : 0,
+            processingTimeMs,
+          },
+        })
+        .where(eq(extractionRuns.id, extractionRunId));
+
+      // Update job status
+      await tx
+        .update(jobs)
+        .set({ status: "completed", completedAt: new Date() })
+        .where(eq(jobs.id, jobId));
+    });
+
     job.progress.status = "completed";
     job.progress.completedAt = new Date();
 
-    // Update extraction run with final stats
-    const processingTimeMs = Date.now() - startTime;
-    await db
-      .update(extractionRuns)
-      .set({
-        status: "completed",
-        completedAt: new Date(),
-        emailsProcessed: job.progress.processedItems,
-        transactionsCreated: runStats.transactionCount,
-        informationalCount: job.progress.informationalItems,
-        errorCount: job.progress.failedItems,
-        stats: {
-          byType: runStats.byType,
-          avgConfidence: runStats.transactionCount > 0
-            ? runStats.totalConfidence / runStats.transactionCount
-            : 0,
-          processingTimeMs,
-        },
-      })
-      .where(eq(extractionRuns.id, extractionRunId));
-
-    await db
-      .update(jobs)
-      .set({ status: "completed", completedAt: new Date() })
-      .where(eq(jobs.id, jobId));
+    console.log(`Extraction run ${extractionRunId} completed with ${runStats.transactionCount} transactions`);
   } catch (error) {
+    // Run failed - don't commit any transactions (they weren't inserted yet)
+    console.error(`Extraction run failed:`, error);
+
     job.progress.status = "failed";
     job.progress.errorMessage =
       error instanceof Error ? error.message : "Unknown error";
     job.progress.completedAt = new Date();
 
-    // Update extraction run as failed
+    // Update extraction run as failed (no transactions were created)
     const processingTimeMs = Date.now() - startTime;
     await db
       .update(extractionRuns)
@@ -550,14 +636,12 @@ async function runExtractionJob(
         status: "failed",
         completedAt: new Date(),
         emailsProcessed: job.progress.processedItems,
-        transactionsCreated: runStats.transactionCount,
+        transactionsCreated: 0, // No transactions created on failure
         informationalCount: job.progress.informationalItems,
         errorCount: job.progress.failedItems,
         stats: {
           byType: runStats.byType,
-          avgConfidence: runStats.transactionCount > 0
-            ? runStats.totalConfidence / runStats.transactionCount
-            : 0,
+          avgConfidence: 0,
           processingTimeMs,
         },
       })

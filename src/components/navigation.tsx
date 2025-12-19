@@ -12,6 +12,7 @@ import {
   MessageSquare,
   History,
   FolderOpen,
+  Scale,
 } from "lucide-react";
 
 const navItems = [
@@ -20,6 +21,7 @@ const navItems = [
   { href: "/email-sets", label: "Sets", icon: FolderOpen },
   { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
   { href: "/runs", label: "Runs", icon: History },
+  { href: "/compare", label: "Compare", icon: Scale },
   { href: "/accounts", label: "Accounts", icon: Wallet },
   { href: "/corpus", label: "Account Groups", icon: Link2 },
   { href: "/chat", label: "Chat", icon: MessageSquare },

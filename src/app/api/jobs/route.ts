@@ -37,9 +37,14 @@ export async function POST(request: NextRequest) {
 
   switch (type) {
     case "extraction":
+      if (!options?.setId) {
+        return NextResponse.json(
+          { error: "setId is required for extraction" },
+          { status: 400 }
+        );
+      }
       jobId = await startExtractionJob({
-        emailIds: options?.emailIds,
-        setId: options?.setId,
+        setId: options.setId,
         modelId: options?.modelId,
         concurrency: options?.concurrency || 3,
       });

@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { emails } from "@/db/schema";
+import { emails, aiModels, AiModel } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
 import {
   AVAILABLE_MODELS,
-  getAvailableModels,
+  isProviderConfigured,
   estimateBatchCost,
   formatCost,
   DEFAULT_MODEL_ID,
+  ModelProvider,
 } from "@/services/model-config";
 
 // GET /api/models - List available models and estimate costs
@@ -16,12 +17,59 @@ export async function GET(request: NextRequest) {
   const setId = searchParams.get("setId");
   const emailIds = searchParams.get("emailIds"); // Comma-separated
 
-  // Get available models (those with API keys)
-  const availableModels = getAvailableModels();
-  const allModels = AVAILABLE_MODELS.map(model => ({
-    ...model,
-    available: availableModels.some(m => m.id === model.id),
-  }));
+  // Get models from database first, fall back to defaults
+  let dbModels: AiModel[] = [];
+  try {
+    dbModels = await db.select().from(aiModels).orderBy(aiModels.sortOrder);
+  } catch {
+    // Table might not exist yet
+  }
+
+  // Create a map of database models by ID
+  const dbModelMap = new Map(dbModels.map(m => [m.id, m]));
+
+  // Build the models list, respecting database settings
+  const allModels = AVAILABLE_MODELS.map(model => {
+    const dbModel = dbModelMap.get(model.id);
+    const provider = (dbModel?.provider || model.provider) as ModelProvider;
+    const isActive = dbModel ? dbModel.isActive !== false : true; // Default to active if not in DB
+    const available = isProviderConfigured(provider);
+
+    return {
+      id: dbModel?.id || model.id,
+      provider,
+      name: dbModel?.name || model.name,
+      description: dbModel?.description || model.description,
+      inputCostPerMillion: dbModel ? parseFloat(dbModel.inputCostPerMillion) : model.inputCostPerMillion,
+      outputCostPerMillion: dbModel ? parseFloat(dbModel.outputCostPerMillion) : model.outputCostPerMillion,
+      contextWindow: dbModel?.contextWindow || model.contextWindow,
+      recommended: dbModel?.isRecommended || model.recommended || false,
+      isActive,
+      available,
+    };
+  });
+
+  // Add any discovered models from DB that aren't in defaults
+  for (const dbModel of dbModels) {
+    if (!AVAILABLE_MODELS.some(m => m.id === dbModel.id)) {
+      const provider = dbModel.provider as ModelProvider;
+      allModels.push({
+        id: dbModel.id,
+        provider,
+        name: dbModel.name,
+        description: dbModel.description || "",
+        inputCostPerMillion: parseFloat(dbModel.inputCostPerMillion),
+        outputCostPerMillion: parseFloat(dbModel.outputCostPerMillion),
+        contextWindow: dbModel.contextWindow,
+        recommended: dbModel.isRecommended || false,
+        isActive: dbModel.isActive !== false,
+        available: isProviderConfigured(provider),
+      });
+    }
+  }
+
+  // Filter to only active and available models for the dropdown
+  const availableModels = allModels.filter(m => m.isActive && m.available);
 
   // If emailIds or setId provided, estimate costs for pending emails
   let costEstimates: Record<string, {
@@ -73,9 +121,16 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // Find a valid default - preferably the configured default if it's active, otherwise first available
+  let effectiveDefaultModelId = DEFAULT_MODEL_ID;
+  if (!availableModels.some(m => m.id === DEFAULT_MODEL_ID)) {
+    effectiveDefaultModelId = availableModels[0]?.id || DEFAULT_MODEL_ID;
+  }
+
   return NextResponse.json({
-    models: allModels,
-    defaultModelId: DEFAULT_MODEL_ID,
+    models: availableModels, // Only active + available models for dropdown
+    allModels, // All models including inactive ones (for reference)
+    defaultModelId: effectiveDefaultModelId,
     costEstimates,
   });
 }

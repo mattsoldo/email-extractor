@@ -34,11 +34,12 @@ async function main() {
       const parsed = await parseEmlFile(join(emailFolder, file));
       const extraction = await extractTransaction(parsed);
 
-      if (extraction.isTransaction) {
-        console.log(`✓ ${extraction.transactionType}`);
+      if (extraction.isTransactional && extraction.transactions.length > 0) {
+        const types = extraction.transactions.map(t => t.transactionType).join(", ");
+        console.log(`✓ ${extraction.transactions.length} tx: ${types}`);
         results.success.push(file);
       } else {
-        console.log(`○ Not a transaction`);
+        console.log(`○ Not a transaction (${extraction.emailType})`);
         results.nonTransactional.push({
           file,
           subject: parsed.subject || undefined,

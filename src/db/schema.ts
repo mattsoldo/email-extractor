@@ -253,6 +253,8 @@ export const extractionRuns = pgTable("extraction_runs", {
   description: text("description"), // Notes about this run
   modelId: text("model_id").notNull(), // Which AI model was used
   softwareVersion: text("software_version").notNull(), // Which version of our software was used
+  instructions: text("instructions"), // Custom extraction instructions (null = default)
+  instructionsHash: text("instructions_hash"), // Hash of instructions for duplicate detection
   emailsProcessed: integer("emails_processed").default(0),
   transactionsCreated: integer("transactions_created").default(0),
   informationalCount: integer("informational_count").default(0),

@@ -23,30 +23,39 @@ export interface ModelConfig {
 // Current pricing as of December 2024
 // These serve as defaults - database models take precedence
 export const AVAILABLE_MODELS: ModelConfig[] = [
-  // Anthropic Claude Models (Claude 4.5 series)
+  // Anthropic Claude Models
   {
-    id: "claude-opus-4-5-20251101",
+    id: "claude-3-opus-20240229",
     provider: "anthropic",
-    name: "Claude Opus 4.5",
+    name: "Claude 3 Opus",
     description: "Most capable Claude model. Best for complex extractions requiring deep reasoning.",
     inputCostPerMillion: 15.00,
     outputCostPerMillion: 75.00,
     contextWindow: 200000,
   },
   {
-    id: "claude-sonnet-4-5-20241022",
+    id: "claude-sonnet-4-20250514",
     provider: "anthropic",
-    name: "Claude Sonnet 4.5",
-    description: "Excellent balance of capability and cost. Recommended for most extractions.",
+    name: "Claude Sonnet 4",
+    description: "Latest Claude Sonnet. Excellent balance of capability and cost.",
     inputCostPerMillion: 3.00,
     outputCostPerMillion: 15.00,
     contextWindow: 200000,
     recommended: true,
   },
   {
-    id: "claude-haiku-4-5-20241022",
+    id: "claude-3-5-sonnet-20241022",
     provider: "anthropic",
-    name: "Claude Haiku 4.5",
+    name: "Claude 3.5 Sonnet",
+    description: "Excellent balance of capability and cost. Recommended for most extractions.",
+    inputCostPerMillion: 3.00,
+    outputCostPerMillion: 15.00,
+    contextWindow: 200000,
+  },
+  {
+    id: "claude-3-5-haiku-20241022",
+    provider: "anthropic",
+    name: "Claude 3.5 Haiku",
     description: "Fast and affordable. Good for simple, high-volume extractions.",
     inputCostPerMillion: 1.00,
     outputCostPerMillion: 5.00,
@@ -120,7 +129,7 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
 ];
 
 // Default model for new extractions
-export const DEFAULT_MODEL_ID = "claude-sonnet-4-5-20241022";
+export const DEFAULT_MODEL_ID = "claude-sonnet-4-20250514";
 
 /**
  * Get a model configuration by ID
@@ -235,7 +244,8 @@ export function isProviderConfigured(provider: ModelProvider): boolean {
     case "openai":
       return !!process.env.OPENAI_API_KEY;
     case "google":
-      return !!(process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY);
+      // Google AI SDK uses GOOGLE_GENERATIVE_AI_API_KEY
+      return !!(process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY);
     default:
       return false;
   }

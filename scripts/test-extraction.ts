@@ -64,16 +64,23 @@ async function main() {
       const extraction = await extractTransaction(parsed);
 
       console.log("\n   ✓ Extraction result:");
-      console.log(`     Type: ${extraction.transactionType}`);
-      console.log(`     Is Transaction: ${extraction.isTransaction}`);
-      console.log(`     Amount: ${extraction.amount ? `$${extraction.amount}` : "N/A"}`);
-      console.log(`     Symbol: ${extraction.symbol || "N/A"}`);
-      console.log(`     Account: ${extraction.accountNumber || "N/A"}`);
-      console.log(`     Date: ${extraction.transactionDate || "N/A"}`);
-      console.log(`     Confidence: ${extraction.confidence}`);
+      console.log(`     Email Type: ${extraction.emailType}`);
+      console.log(`     Is Transactional: ${extraction.isTransactional}`);
+      console.log(`     Transactions Found: ${extraction.transactions.length}`);
+
+      for (let i = 0; i < extraction.transactions.length; i++) {
+        const tx = extraction.transactions[i];
+        console.log(`\n     Transaction ${i + 1}:`);
+        console.log(`       Type: ${tx.transactionType}`);
+        console.log(`       Amount: ${tx.amount ? `$${tx.amount}` : "N/A"}`);
+        console.log(`       Symbol: ${tx.symbol || "N/A"}`);
+        console.log(`       Account: ${tx.accountNumber || "N/A"}`);
+        console.log(`       Date: ${tx.transactionDate || "N/A"}`);
+        console.log(`       Confidence: ${tx.confidence}`);
+      }
 
       if (extraction.extractionNotes) {
-        console.log(`     Notes: ${extraction.extractionNotes}`);
+        console.log(`\n     Notes: ${extraction.extractionNotes}`);
       }
     } catch (error: any) {
       console.error("   ✗ AI extraction failed:", error.message);

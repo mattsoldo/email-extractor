@@ -725,7 +725,7 @@ function EmailsContent() {
                   ref={fileInputRef}
                   type="file"
                   multiple
-                  accept=".eml,.zip"
+                  accept=".eml,.txt,.zip"
                   className="hidden"
                   onChange={(e) => {
                     if (e.target.files) {
@@ -737,7 +737,7 @@ function EmailsContent() {
                 <p className="text-gray-600 mb-1">
                   {isDragging
                     ? "Drop files here"
-                    : "Drag & drop .eml or .zip files here"}
+                    : "Drag & drop .eml, .txt, or .zip files here"}
                 </p>
                 <p className="text-sm text-gray-500">
                   or click to browse

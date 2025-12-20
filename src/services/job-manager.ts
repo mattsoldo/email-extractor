@@ -1,12 +1,21 @@
 import { v4 as uuid } from "uuid";
+import { createHash } from "crypto";
 import { db } from "@/db";
 import { jobs, emails, transactions, accounts, extractionLogs, extractionRuns } from "@/db/schema";
 import { eq, and, inArray, desc, sql } from "drizzle-orm";
 import { scanEmailDirectory, parseEmlFile, toDbEmail, classifyEmail } from "./email-parser";
-import { extractTransaction, type TransactionExtraction, DEFAULT_MODEL_ID } from "./ai-extractor";
+import { extractTransaction, type TransactionExtraction, type SingleTransaction, DEFAULT_MODEL_ID, DEFAULT_EXTRACTION_INSTRUCTIONS } from "./ai-extractor";
 import { normalizeTransaction, detectOrCreateAccount } from "./transaction-normalizer";
 import { estimateBatchCost, formatCost, getModelConfig } from "./model-config";
 import { SOFTWARE_VERSION } from "@/config/version";
+
+/**
+ * Hash instructions for duplicate detection
+ */
+function hashInstructions(instructions: string | null): string {
+  const content = instructions || DEFAULT_EXTRACTION_INSTRUCTIONS;
+  return createHash("sha256").update(content).digest("hex").substring(0, 16);
+}
 
 export type JobType = "email_scan" | "extraction" | "reprocess";
 export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -259,12 +268,15 @@ async function runEmailScanJob(
 }
 
 /**
- * Check if an extraction already exists for this set+model+version combination
+ * Check if an extraction already exists for this set+model+version+instructions combination
  */
 export async function checkExistingExtraction(
   setId: string,
-  modelId: string
+  modelId: string,
+  instructions?: string | null
 ): Promise<{ exists: boolean; run?: typeof extractionRuns.$inferSelect }> {
+  const instructionsHash = hashInstructions(instructions || null);
+
   const existing = await db
     .select()
     .from(extractionRuns)
@@ -273,6 +285,7 @@ export async function checkExistingExtraction(
         eq(extractionRuns.setId, setId),
         eq(extractionRuns.modelId, modelId),
         eq(extractionRuns.softwareVersion, SOFTWARE_VERSION),
+        eq(extractionRuns.instructionsHash, instructionsHash),
         eq(extractionRuns.status, "completed")
       )
     )
@@ -294,6 +307,9 @@ export async function startExtractionJob(
     setId: string; // Required - which set to extract
     modelId?: string; // AI model to use (defaults to DEFAULT_MODEL_ID)
     concurrency?: number;
+    instructions?: string; // Custom extraction instructions (optional)
+    runName?: string; // Optional name for this run
+    runDescription?: string; // Optional description for this run
   }
 ): Promise<string> {
   if (!options.setId) {
@@ -302,12 +318,12 @@ export async function startExtractionJob(
 
   const modelId = options.modelId || DEFAULT_MODEL_ID;
 
-  // Check if this combination already exists
-  const { exists, run } = await checkExistingExtraction(options.setId, modelId);
+  // Check if this combination already exists (same set, model, version, AND instructions)
+  const { exists, run } = await checkExistingExtraction(options.setId, modelId, options.instructions);
   if (exists) {
     throw new Error(
-      `Extraction already exists for this set with ${modelId} and software v${SOFTWARE_VERSION}. ` +
-      `Run ID: ${run?.id}`
+      `Extraction already exists for this set with ${modelId}, software v${SOFTWARE_VERSION}, and these instructions. ` +
+      `Run ID: ${run?.id}. Use different instructions or change the model to create a new run.`
     );
   }
 
@@ -345,7 +361,8 @@ export async function startExtractionJob(
 // Type for pending transaction data collected during extraction
 interface PendingTransaction {
   emailId: string;
-  extraction: TransactionExtraction;
+  transaction: SingleTransaction;
+  transactionIndex: number; // Index within the email (for emails with multiple transactions)
 }
 
 async function runExtractionJob(
@@ -354,6 +371,9 @@ async function runExtractionJob(
     setId: string;
     modelId?: string;
     concurrency?: number;
+    instructions?: string;
+    runName?: string;
+    runDescription?: string;
   },
   signal: AbortSignal
 ): Promise<void> {
@@ -364,6 +384,7 @@ async function runExtractionJob(
 
   const modelId = options.modelId || DEFAULT_MODEL_ID;
   const setId = options.setId;
+  const customInstructions = options.instructions || null;
 
   await db
     .update(jobs)
@@ -386,8 +407,12 @@ async function runExtractionJob(
     jobId,
     setId,
     version: nextVersion,
+    name: options.runName || null,
+    description: options.runDescription || null,
     modelId,
     softwareVersion: SOFTWARE_VERSION,
+    instructions: customInstructions,
+    instructionsHash: hashInstructions(customInstructions),
     config: options,
     status: "running",
     startedAt: new Date(),
@@ -437,7 +462,7 @@ async function runExtractionJob(
 
       const results = await Promise.allSettled(
         batch.map(async (email) => {
-          // Extract transaction
+          // Extract transaction(s)
           const parsedEmail = {
             id: email.id,
             filename: email.filename,
@@ -458,7 +483,7 @@ async function runExtractionJob(
             headers: (email.headers as Record<string, string>) || {},
           };
 
-          const extraction = await extractTransaction(parsedEmail, modelId);
+          const extraction = await extractTransaction(parsedEmail, modelId, customInstructions || undefined);
 
           return { email, extraction };
         })
@@ -472,26 +497,36 @@ async function runExtractionJob(
         if (result.status === "fulfilled") {
           const { extraction } = result.value;
 
-          if (extraction.isTransaction && extraction.transactionType) {
-            // This is a valid financial transaction - collect for later
-            pendingTransactions.push({ emailId: email.id, extraction });
+          if (extraction.isTransactional && extraction.transactions.length > 0) {
+            // This email contains one or more financial transactions
+            for (let txIndex = 0; txIndex < extraction.transactions.length; txIndex++) {
+              const transaction = extraction.transactions[txIndex];
+              pendingTransactions.push({
+                emailId: email.id,
+                transaction,
+                transactionIndex: txIndex,
+              });
+
+              // Track stats per transaction
+              runStats.transactionCount++;
+              runStats.byType[transaction.transactionType] = (runStats.byType[transaction.transactionType] || 0) + 1;
+              runStats.totalConfidence += transaction.confidence || 0;
+            }
+
             emailUpdates.push({
               id: email.id,
               status: "completed",
-              extraction: extraction as Record<string, unknown>,
+              extraction: extraction as unknown as Record<string, unknown>,
             });
-
-            // Track stats
-            runStats.transactionCount++;
-            runStats.byType[extraction.transactionType] = (runStats.byType[extraction.transactionType] || 0) + 1;
-            runStats.totalConfidence += extraction.confidence || 0;
           } else {
-            // Not a transaction - mark as informational
+            // Not a transaction - mark as informational with email type info
+            const notes = extraction.extractionNotes ||
+              `Non-transactional email (type: ${extraction.emailType})`;
             emailUpdates.push({
               id: email.id,
               status: "informational",
-              extraction: extraction as Record<string, unknown>,
-              notes: extraction.extractionNotes || "Non-transactional email",
+              extraction: extraction as unknown as Record<string, unknown>,
+              notes,
             });
             job.progress.informationalItems++;
           }
@@ -535,25 +570,34 @@ async function runExtractionJob(
     await db.transaction(async (tx) => {
       // Create all transactions
       for (const pending of pendingTransactions) {
+        const txData = pending.transaction;
+
         const fromAccount = await detectOrCreateAccount({
-          accountNumber: pending.extraction.accountNumber,
-          accountName: pending.extraction.accountName,
-          institution: pending.extraction.institution,
+          accountNumber: txData.accountNumber,
+          accountName: txData.accountName,
+          institution: txData.institution,
         });
 
         let toAccount = null;
-        if (pending.extraction.toAccountNumber || pending.extraction.toAccountName) {
+        if (txData.toAccountNumber || txData.toAccountName) {
           toAccount = await detectOrCreateAccount({
-            accountNumber: pending.extraction.toAccountNumber,
-            accountName: pending.extraction.toAccountName,
-            institution: pending.extraction.toInstitution,
+            accountNumber: txData.toAccountNumber,
+            accountName: txData.toAccountName,
+            institution: txData.toInstitution,
             isExternal:
-              pending.extraction.transactionType === "wire_transfer_out" ||
-              pending.extraction.transactionType === "wire_transfer_in",
+              txData.transactionType === "wire_transfer_out" ||
+              txData.transactionType === "wire_transfer_in",
           });
         }
 
-        const normalizedTx = normalizeTransaction(pending.extraction, fromAccount?.id, toAccount?.id);
+        // Convert SingleTransaction to the format expected by normalizeTransaction
+        const extractionForNormalize = {
+          ...txData,
+          isTransaction: true,
+          extractionNotes: null,
+        };
+
+        const normalizedTx = normalizeTransaction(extractionForNormalize, fromAccount?.id, toAccount?.id);
 
         await tx.insert(transactions).values({
           ...normalizedTx,
@@ -665,39 +709,5 @@ async function runExtractionJob(
   }
 }
 
-/**
- * Create a transaction record from an extraction result
- */
-async function createTransactionFromExtraction(
-  emailId: string,
-  extraction: TransactionExtraction,
-  extractionRunId: string
-): Promise<void> {
-  // Detect or create accounts
-  const fromAccount = await detectOrCreateAccount({
-    accountNumber: extraction.accountNumber,
-    accountName: extraction.accountName,
-    institution: extraction.institution,
-  });
-
-  let toAccount = null;
-  if (extraction.toAccountNumber || extraction.toAccountName) {
-    toAccount = await detectOrCreateAccount({
-      accountNumber: extraction.toAccountNumber,
-      accountName: extraction.toAccountName,
-      institution: extraction.toInstitution,
-      isExternal:
-        extraction.transactionType === "wire_transfer_out" ||
-        extraction.transactionType === "wire_transfer_in",
-    });
-  }
-
-  // Normalize and create transaction
-  const normalizedTx = normalizeTransaction(extraction, fromAccount?.id, toAccount?.id);
-
-  await db.insert(transactions).values({
-    ...normalizedTx,
-    sourceEmailId: emailId,
-    extractionRunId,
-  });
-}
+// NOTE: createTransactionFromExtraction function was removed -
+// transaction creation is now handled inline in runExtractionJob with support for multiple transactions per email

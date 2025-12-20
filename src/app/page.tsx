@@ -127,10 +127,16 @@ export default function DashboardPage() {
         fetch("/api/accounts"),
       ]);
 
-      // Safely parse JSON responses
-      let emailsData = { pagination: { total: 0 }, statusCounts: {} };
-      let transactionsData = { pagination: { total: 0 }, typeCounts: {} };
-      let accountsData = { accounts: [] };
+      // Safely parse JSON responses with proper typing
+      let emailsData: {
+        pagination?: { total: number };
+        statusCounts?: Record<string, number>;
+      } = { pagination: { total: 0 }, statusCounts: {} };
+      let transactionsData: {
+        pagination?: { total: number };
+        typeCounts?: Record<string, number>;
+      } = { pagination: { total: 0 }, typeCounts: {} };
+      let accountsData: { accounts?: unknown[] } = { accounts: [] };
 
       try {
         emailsData = await emailsRes.json();

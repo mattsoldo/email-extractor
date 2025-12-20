@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
 import { db } from "@/db";
-import { emails, emailSets } from "@/db/schema";
-import { parseEmlContent, toDbEmail, classifyEmail } from "@/services/email-parser";
+import { emails, emailSets, NewEmail } from "@/db/schema";
+import { parseEmlContent, parseTxtContent, toDbEmail, classifyEmail } from "@/services/email-parser";
 import { eq } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import JSZip from "jszip";
@@ -16,33 +16,39 @@ function computeContentHash(content: Buffer): string {
 // Configure for file uploads - increase body size limit
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// Increase max body size to 100MB for large zip files
+export const maxDuration = 60; // 60 seconds timeout for processing
 
-interface EmailFile {
+interface DocumentFile {
   filename: string;
   content: Buffer;
+  type: "eml" | "txt";
 }
 
-// Extract .eml files from a zip archive
-async function extractEmlFromZip(zipBuffer: Buffer): Promise<EmailFile[]> {
+// Extract .eml and .txt files from a zip archive
+async function extractDocumentsFromZip(zipBuffer: Buffer): Promise<DocumentFile[]> {
   const zip = await JSZip.loadAsync(zipBuffer);
-  const emlFiles: EmailFile[] = [];
+  const files: DocumentFile[] = [];
 
   for (const [path, zipEntry] of Object.entries(zip.files)) {
-    // Skip directories and non-.eml files
-    if (zipEntry.dir || !path.toLowerCase().endsWith(".eml")) {
-      continue;
-    }
+    // Skip directories
+    if (zipEntry.dir) continue;
 
-    // Get just the filename (not the full path)
+    const lowerPath = path.toLowerCase();
     const filename = path.split("/").pop() || path;
     const content = await zipEntry.async("nodebuffer");
-    emlFiles.push({ filename, content });
+
+    if (lowerPath.endsWith(".eml")) {
+      files.push({ filename, content, type: "eml" });
+    } else if (lowerPath.endsWith(".txt")) {
+      files.push({ filename, content, type: "txt" });
+    }
   }
 
-  return emlFiles;
+  return files;
 }
 
-// POST /api/emails/upload - Upload .eml or .zip files
+// POST /api/emails/upload - Upload .eml, .txt, or .zip files
 export async function POST(request: NextRequest) {
   try {
     let formData: FormData;
@@ -62,26 +68,29 @@ export async function POST(request: NextRequest) {
 
     console.log(`Received ${files.length} files for upload, setName: ${setName}, setId: ${existingSetId}`);
 
-    // Collect all email files (extract from zips if needed)
-    const emailFiles: EmailFile[] = [];
+    // Collect all document files (extract from zips if needed)
+    const documentFiles: DocumentFile[] = [];
 
     for (const file of files) {
       const arrayBuffer = await file.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
+      const lowerName = file.name.toLowerCase();
 
-      if (file.name.toLowerCase().endsWith(".zip")) {
-        // Extract emails from zip
-        console.log(`Extracting emails from zip: ${file.name}`);
-        const extracted = await extractEmlFromZip(buffer);
-        console.log(`Found ${extracted.length} .eml files in ${file.name}`);
-        emailFiles.push(...extracted);
-      } else if (file.name.toLowerCase().endsWith(".eml")) {
-        emailFiles.push({ filename: file.name, content: buffer });
+      if (lowerName.endsWith(".zip")) {
+        // Extract documents from zip
+        console.log(`Extracting documents from zip: ${file.name}`);
+        const extracted = await extractDocumentsFromZip(buffer);
+        console.log(`Found ${extracted.length} files (.eml/.txt) in ${file.name}`);
+        documentFiles.push(...extracted);
+      } else if (lowerName.endsWith(".eml")) {
+        documentFiles.push({ filename: file.name, content: buffer, type: "eml" });
+      } else if (lowerName.endsWith(".txt")) {
+        documentFiles.push({ filename: file.name, content: buffer, type: "txt" });
       }
       // Ignore other file types
     }
 
-    console.log(`Total email files to process: ${emailFiles.length}`);
+    console.log(`Total document files to process: ${documentFiles.length}`);
 
     // Use existing set (for batch uploads) or create a new one
     let targetSetId: string;
@@ -102,9 +111,9 @@ export async function POST(request: NextRequest) {
       createdSet = newSet;
     }
 
-    if (emailFiles.length === 0) {
+    if (documentFiles.length === 0) {
       return NextResponse.json(
-        { error: "No .eml files found (upload .eml files or a .zip containing them)" },
+        { error: "No supported files found (upload .eml, .txt files or a .zip containing them)" },
         { status: 400 }
       );
     }
@@ -123,36 +132,43 @@ export async function POST(request: NextRequest) {
       }>,
     };
 
-    for (const emailFile of emailFiles) {
+    for (const docFile of documentFiles) {
       try {
         // Compute content hash for deduplication
-        const contentHash = computeContentHash(emailFile.content);
+        const contentHash = computeContentHash(docFile.content);
 
-        // Check if this email already exists (by content hash)
-        const existingEmail = await db
-          .select({ id: emails.id, subject: emails.subject })
-          .from(emails)
-          .where(eq(emails.contentHash, contentHash))
-          .limit(1);
+        // Check if this document already exists (by content hash)
+        let existingDoc: { id: string; subject: string | null }[] = [];
+        try {
+          existingDoc = await db
+            .select({ id: emails.id, subject: emails.subject })
+            .from(emails)
+            .where(eq(emails.contentHash, contentHash))
+            .limit(1);
+        } catch (dbError) {
+          // If contentHash column doesn't exist, skip dedup check
+          console.warn("Dedup check failed (contentHash column may not exist):", dbError);
+        }
 
-        if (existingEmail.length > 0) {
-          // Email already exists - skip as duplicate
+        if (existingDoc.length > 0) {
+          // Document already exists - skip as duplicate
           results.duplicates++;
           results.details.push({
-            filename: emailFile.filename,
+            filename: docFile.filename,
             status: "duplicate",
-            reason: `Duplicate of existing email (subject: "${existingEmail[0].subject || 'No subject'}")`,
-            existingEmailId: existingEmail[0].id,
+            reason: `Duplicate of existing document (subject: "${existingDoc[0].subject || 'No subject'}")`,
+            existingEmailId: existingDoc[0].id,
           });
           continue;
         }
 
         // Store in Vercel Blob (optional - for backup/reference)
         let blobUrl: string | null = null;
+        const contentType = docFile.type === "txt" ? "text/plain" : "message/rfc822";
         try {
-          const blob = await put(`emails/${emailFile.filename}`, emailFile.content, {
+          const blob = await put(`emails/${docFile.filename}`, docFile.content, {
             access: "public",
-            contentType: "message/rfc822",
+            contentType,
           });
           blobUrl = blob.url;
         } catch (blobError) {
@@ -161,43 +177,79 @@ export async function POST(request: NextRequest) {
           console.warn("Blob storage unavailable, continuing without:", blobError);
         }
 
-        // Parse the email
-        const parsed = await parseEmlContent(emailFile.content, emailFile.filename);
+        // Parse the document based on type
+        const parsed = docFile.type === "txt"
+          ? parseTxtContent(docFile.content, docFile.filename)
+          : await parseEmlContent(docFile.content, docFile.filename);
         const classification = classifyEmail(parsed);
 
-        // Create database record
-        const dbEmail = toDbEmail(parsed);
-
-        if (!classification.shouldProcess) {
-          dbEmail.extractionStatus = "skipped";
-          dbEmail.skipReason = classification.skipReason;
-        }
+        // Create database record with all fields
+        const dbEmailCore: NewEmail = {
+          id: parsed.id,
+          filename: parsed.filename,
+          subject: parsed.subject,
+          sender: parsed.sender,
+          recipient: parsed.recipient,
+          date: parsed.date,
+          bodyText: parsed.bodyText,
+          bodyHtml: parsed.bodyHtml,
+          rawContent: parsed.rawContent,
+          headers: parsed.headers,
+          extractionStatus: classification.shouldProcess ? "pending" : "skipped",
+          skipReason: classification.skipReason || null,
+          contentHash,
+          setId: targetSetId,
+          // Structured header fields from mailparser
+          senderName: parsed.senderName || null,
+          recipientName: parsed.recipientName || null,
+          cc: parsed.cc || null,
+          replyTo: parsed.replyTo || null,
+          messageId: parsed.messageId || null,
+          inReplyTo: parsed.inReplyTo || null,
+          receivedAt: parsed.receivedAt || null,
+        };
 
         // Add blob URL to metadata if available
         if (blobUrl) {
-          dbEmail.headers = {
-            ...dbEmail.headers,
+          dbEmailCore.headers = {
+            ...(dbEmailCore.headers as Record<string, string>),
             _blobUrl: blobUrl,
           };
         }
 
-        // Add content hash and set reference
-        (dbEmail as Record<string, unknown>).contentHash = contentHash;
-        (dbEmail as Record<string, unknown>).setId = targetSetId;
-
-        await db.insert(emails).values(dbEmail);
+        try {
+          await db.insert(emails).values(dbEmailCore);
+        } catch (insertError) {
+          // If insert fails (possibly due to new columns), try with minimal fields
+          console.warn("Full insert failed, trying minimal insert:", insertError);
+          const minimalEmail = {
+            id: parsed.id,
+            filename: parsed.filename,
+            subject: parsed.subject,
+            sender: parsed.sender,
+            recipient: parsed.recipient,
+            date: parsed.date,
+            bodyText: parsed.bodyText,
+            bodyHtml: parsed.bodyHtml,
+            rawContent: parsed.rawContent,
+            headers: parsed.headers,
+            extractionStatus: classification.shouldProcess ? "pending" as const : "skipped" as const,
+            skipReason: classification.skipReason || null,
+          };
+          await db.insert(emails).values(minimalEmail);
+        }
 
         results.uploaded++;
         results.details.push({
-          filename: emailFile.filename,
+          filename: docFile.filename,
           status: "uploaded",
-          emailId: dbEmail.id,
+          emailId: parsed.id,
         });
       } catch (fileError) {
-        console.error(`Failed to process ${emailFile.filename}:`, fileError);
+        console.error(`Failed to process ${docFile.filename}:`, fileError);
         results.failed++;
         results.details.push({
-          filename: emailFile.filename,
+          filename: docFile.filename,
           status: "failed",
           reason: fileError instanceof Error ? fileError.message : "Unknown error",
         });
@@ -205,7 +257,7 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({
-      message: `Processed ${emailFiles.length} email(s)`,
+      message: `Processed ${documentFiles.length} document(s)`,
       results,
       set: createdSet || (targetSetId ? { id: targetSetId } : null),
     });

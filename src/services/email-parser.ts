@@ -96,6 +96,44 @@ export async function parseEmlContent(
 }
 
 /**
+ * Parse a plain text file as a document for extraction
+ * Text files don't have email headers - the entire content becomes the body
+ */
+export function parseTxtContent(
+  content: Buffer | string,
+  filename: string
+): ParsedEmail {
+  const textContent = Buffer.isBuffer(content) ? content.toString("utf-8") : content;
+
+  // Try to extract a title from the first non-empty line
+  const lines = textContent.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+  const firstLine = lines[0] || filename;
+
+  // Use filename (without extension) as a fallback subject
+  const baseName = filename.replace(/\.txt$/i, "");
+
+  return {
+    id: uuid(),
+    filename,
+    subject: firstLine.length < 200 ? firstLine : baseName, // Use first line as subject if reasonable
+    sender: null,
+    senderName: null,
+    recipient: null,
+    recipientName: null,
+    cc: null,
+    replyTo: null,
+    messageId: null,
+    inReplyTo: null,
+    date: null,
+    receivedAt: null,
+    bodyText: textContent,
+    bodyHtml: null,
+    rawContent: textContent,
+    headers: { _fileType: "text" }, // Mark as text file for reference
+  };
+}
+
+/**
  * Extract email address from parsed address object
  */
 function extractEmailAddress(

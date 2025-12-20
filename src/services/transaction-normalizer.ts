@@ -8,7 +8,13 @@ import {
   type Account,
 } from "@/db/schema";
 import { eq, or, and, like, sql } from "drizzle-orm";
-import type { TransactionExtraction } from "./ai-extractor";
+import type { SingleTransaction } from "./ai-extractor";
+
+// Type alias for backwards compatibility
+type TransactionExtraction = SingleTransaction & {
+  isTransaction?: boolean;
+  extractionNotes?: string | null;
+};
 
 /**
  * Account detection/creation input

@@ -34,21 +34,32 @@ async function main() {
       const parsed = await parseEmlFile(join(emailFolder, file));
       const extraction = await extractTransaction(parsed);
 
-      console.log(`Type: ${extraction.transactionType || "N/A"}`);
-      console.log(`Is Transaction: ${extraction.isTransaction}`);
-      console.log(`Date: ${extraction.transactionDate || "N/A"}`);
-      console.log(`Amount: ${extraction.amount ? `$${extraction.amount.toLocaleString()}` : "N/A"}`);
-      console.log(`Account: ${extraction.accountNumber || extraction.accountName || "N/A"}`);
+      console.log(`Email Type: ${extraction.emailType}`);
+      console.log(`Is Transactional: ${extraction.isTransactional}`);
+      console.log(`Transactions Found: ${extraction.transactions.length}`);
 
-      if (extraction.symbol) console.log(`Symbol: ${extraction.symbol}`);
-      if (extraction.quantity) console.log(`Quantity: ${extraction.quantity}`);
-      if (extraction.price) console.log(`Price: $${extraction.price}`);
-      if (extraction.toAccountNumber) console.log(`To Account: ${extraction.toAccountNumber}`);
-      if (extraction.fees) console.log(`Fees: $${extraction.fees}`);
-      if (extraction.referenceNumber) console.log(`Reference: ${extraction.referenceNumber}`);
-      if (extraction.grantNumber) console.log(`Grant #: ${extraction.grantNumber}`);
+      for (let i = 0; i < extraction.transactions.length; i++) {
+        const tx = extraction.transactions[i];
+        console.log(`\n  Transaction ${i + 1}:`);
+        console.log(`    Type: ${tx.transactionType}`);
+        console.log(`    Date: ${tx.transactionDate || "N/A"}`);
+        console.log(`    Amount: ${tx.amount ? `$${tx.amount.toLocaleString()}` : "N/A"}`);
+        console.log(`    Account: ${tx.accountNumber || tx.accountName || "N/A"}`);
 
-      console.log(`Confidence: ${(extraction.confidence * 100).toFixed(0)}%`);
+        if (tx.symbol) console.log(`    Symbol: ${tx.symbol}`);
+        if (tx.quantity) console.log(`    Quantity: ${tx.quantity}`);
+        if (tx.price) console.log(`    Price: $${tx.price}`);
+        if (tx.toAccountNumber) console.log(`    To Account: ${tx.toAccountNumber}`);
+        if (tx.fees) console.log(`    Fees: $${tx.fees}`);
+        if (tx.referenceNumber) console.log(`    Reference: ${tx.referenceNumber}`);
+        if (tx.grantNumber) console.log(`    Grant #: ${tx.grantNumber}`);
+
+        console.log(`    Confidence: ${(tx.confidence * 100).toFixed(0)}%`);
+      }
+
+      if (extraction.extractionNotes) {
+        console.log(`\nNotes: ${extraction.extractionNotes}`);
+      }
     } catch (error: any) {
       console.log(`✗ Error: ${error.message}`);
     }

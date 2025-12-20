@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { jobs } from "@/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { jobs, extractionRuns } from "@/db/schema";
+import { desc, eq, or, inArray } from "drizzle-orm";
 import {
   startExtractionJob,
   getJobProgress,
@@ -15,8 +15,39 @@ export async function GET(request: NextRequest) {
   const activeOnly = searchParams.get("active") === "true";
 
   if (activeOnly) {
-    const active = getActiveJobs();
-    return NextResponse.json({ jobs: active });
+    // Get in-memory active jobs
+    const inMemoryJobs = getActiveJobs();
+
+    // Also get running extraction runs from database (in case of server restart)
+    const runningRuns = await db
+      .select()
+      .from(extractionRuns)
+      .where(eq(extractionRuns.status, "running"))
+      .orderBy(desc(extractionRuns.startedAt));
+
+    // Convert running runs to job progress format
+    const runningJobsFromDB = runningRuns.map(run => ({
+      id: run.jobId || run.id,
+      type: "extraction" as const,
+      status: "running" as const,
+      totalItems: run.emailsProcessed,
+      processedItems: run.emailsProcessed,
+      failedItems: run.errorCount,
+      skippedItems: 0,
+      informationalItems: run.informationalCount,
+      errorMessage: null,
+      startedAt: run.startedAt,
+      completedAt: null,
+    }));
+
+    // Merge in-memory jobs with DB jobs, preferring in-memory for duplicates
+    const inMemoryJobIds = new Set(inMemoryJobs.map(j => j.id));
+    const allActiveJobs = [
+      ...inMemoryJobs,
+      ...runningJobsFromDB.filter(j => !inMemoryJobIds.has(j.id))
+    ];
+
+    return NextResponse.json({ jobs: allActiveJobs });
   }
 
   const allJobs = await db

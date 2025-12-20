@@ -103,9 +103,29 @@ interface EligibilityCheck {
   };
 }
 
+interface RecentRun {
+  id: string;
+  setId: string;
+  setName: string | null;
+  modelId: string;
+  modelName: string | null;
+  promptId: string;
+  promptName: string | null;
+  version: number;
+  name: string | null;
+  status: string;
+  emailsProcessed: number;
+  transactionsCreated: number;
+  informationalCount: number;
+  errorCount: number;
+  startedAt: Date;
+  completedAt: Date | null;
+}
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [activeJobs, setActiveJobs] = useState<JobProgress[]>([]);
+  const [recentRuns, setRecentRuns] = useState<RecentRun[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Model selection state
@@ -190,6 +210,16 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const fetchRecentRuns = useCallback(async () => {
+    try {
+      const res = await fetch("/api/runs/recent");
+      const data = await res.json();
+      setRecentRuns(data.runs || []);
+    } catch (error) {
+      console.error("Failed to fetch recent runs:", error);
+    }
+  }, []);
+
   const fetchModels = useCallback(async () => {
     try {
       // Fetch models with cost estimates for pending emails
@@ -240,16 +270,18 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchStats();
     fetchActiveJobs();
+    fetchRecentRuns();
     fetchModels();
     fetchEmailSets();
 
-    // Poll for active jobs
+    // Poll for active jobs and recent runs
     const interval = setInterval(() => {
       fetchActiveJobs();
+      fetchRecentRuns();
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [fetchStats, fetchActiveJobs, fetchModels, fetchEmailSets]);
+  }, [fetchStats, fetchActiveJobs, fetchRecentRuns, fetchModels, fetchEmailSets]);
 
   // Auto-select set if there's only one
   useEffect(() => {
@@ -578,6 +610,68 @@ export default function DashboardPage() {
                         }
                         className="h-2"
                       />
+                    </CardContent>
+                  </Card>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Recent Completed Runs */}
+        {recentRuns.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">
+              Recent Completed Runs
+            </h2>
+            <div className="space-y-4">
+              {recentRuns.map((run) => (
+                <Link key={run.id} href={`/runs/${run.id}`}>
+                  <Card className="hover:shadow-md transition-shadow cursor-pointer">
+                    <CardContent className="pt-6">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="secondary">v{run.version}</Badge>
+                          <span className="font-medium">
+                            {run.name || run.setName || "Untitled Run"}
+                          </span>
+                        </div>
+                        <div className="text-sm text-gray-500">
+                          {run.completedAt && new Date(run.completedAt).toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                        <div>
+                          <div className="text-gray-500">Model</div>
+                          <div className="font-medium">{run.modelName || run.modelId}</div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Prompt</div>
+                          <div className="font-medium truncate">{run.promptName || "Default"}</div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Processed</div>
+                          <div className="font-medium">{run.emailsProcessed} emails</div>
+                        </div>
+                        <div>
+                          <div className="text-gray-500">Extracted</div>
+                          <div className="font-medium text-green-600">{run.transactionsCreated} transactions</div>
+                        </div>
+                      </div>
+                      {(run.informationalCount > 0 || run.errorCount > 0) && (
+                        <div className="flex gap-4 mt-2 text-sm">
+                          {run.informationalCount > 0 && (
+                            <span className="text-blue-500">
+                              {run.informationalCount} informational
+                            </span>
+                          )}
+                          {run.errorCount > 0 && (
+                            <span className="text-red-500">
+                              {run.errorCount} errors
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 </Link>

@@ -4,7 +4,7 @@ import { openai } from "@ai-sdk/openai";
 import { google } from "@ai-sdk/google";
 import { z } from "zod";
 import type { ParsedEmail } from "./email-parser";
-import { getModelConfig, DEFAULT_MODEL_ID, type ModelConfig } from "./model-config";
+import { getModelConfig, DEFAULT_MODEL_ID, type ModelConfig, type ModelProvider } from "./model-config";
 
 // Schema for a single transaction
 // Using .nullish() instead of .nullable() to allow fields to be omitted (OpenAI) or set to null (Claude)
@@ -148,11 +148,50 @@ export type TransactionExtraction = z.infer<typeof TransactionExtractionSchema>;
 
 /**
  * Get the AI model instance based on model ID
+ * ALWAYS queries database first (source of truth), falls back to hardcoded models only as last resort
  */
-function getModelInstance(modelId: string) {
-  const config = getModelConfig(modelId);
+async function getModelInstance(modelId: string) {
+  let config: ModelConfig | undefined;
+
+  // Database is the source of truth - try it first
+  try {
+    const { db } = await import("@/db");
+    const { aiModels } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+
+    const dbModels = await db.select().from(aiModels).where(eq(aiModels.id, modelId)).limit(1);
+
+    if (dbModels.length > 0) {
+      const dbModel = dbModels[0];
+      config = {
+        id: dbModel.id,
+        provider: dbModel.provider as ModelProvider,
+        name: dbModel.name,
+        description: dbModel.description || "",
+        inputCostPerMillion: parseFloat(dbModel.inputCostPerMillion),
+        outputCostPerMillion: parseFloat(dbModel.outputCostPerMillion),
+        contextWindow: dbModel.contextWindow,
+      };
+      console.log(`[AI Extractor] ✓ Using model from database: ${modelId} (${config.provider})`);
+    }
+  } catch (dbError) {
+    console.error(`[AI Extractor] ⚠ Failed to query database for model ${modelId}, falling back to hardcoded:`, dbError);
+    // Fall back to hardcoded models
+    config = getModelConfig(modelId);
+  }
+
+  // If still not found in database, try hardcoded as fallback
   if (!config) {
-    throw new Error(`Unknown model: ${modelId}`);
+    config = getModelConfig(modelId);
+    if (config) {
+      console.log(`[AI Extractor] ⚠ Using hardcoded model (not in database): ${modelId} (${config.provider})`);
+    }
+  }
+
+  if (!config) {
+    const error = new Error(`Unknown model: ${modelId}. Model not found in database or hardcoded models.`);
+    console.error(`[AI Extractor] ✗ ${error.message}`);
+    throw error;
   }
 
   if (config.provider === "anthropic") {
@@ -165,7 +204,9 @@ function getModelInstance(modelId: string) {
     return google(modelId);
   }
 
-  throw new Error(`Unsupported provider: ${config.provider}`);
+  const error = new Error(`Unsupported provider: ${config.provider} for model ${modelId}`);
+  console.error(`[AI Extractor] ✗ ${error.message}`);
+  throw error;
 }
 
 // Default extraction instructions
@@ -205,17 +246,20 @@ export async function extractTransaction(
   modelId: string = DEFAULT_MODEL_ID,
   customInstructions?: string
 ): Promise<TransactionExtraction> {
-  // Prepare the email content for the AI
-  const emailContent = prepareEmailContent(email);
+  try {
+    // Prepare the email content for the AI
+    const emailContent = prepareEmailContent(email);
 
-  const model = getModelInstance(modelId);
+    console.log(`[AI Extractor] Starting extraction for email ${email.id} (${email.subject}) using model ${modelId}`);
 
-  const instructions = customInstructions || DEFAULT_EXTRACTION_INSTRUCTIONS;
+    const model = await getModelInstance(modelId);
 
-  const { object } = await generateObject({
-    model,
-    schema: TransactionExtractionSchema,
-    prompt: `You are a financial data extraction expert. Analyze this email and extract all financial transaction information.
+    const instructions = customInstructions || DEFAULT_EXTRACTION_INSTRUCTIONS;
+
+    const { object } = await generateObject({
+      model,
+      schema: TransactionExtractionSchema,
+      prompt: `You are a financial data extraction expert. Analyze this email and extract all financial transaction information.
 
 EMAIL SUBJECT: ${email.subject || "(no subject)"}
 
@@ -227,9 +271,20 @@ EMAIL CONTENT:
 ${emailContent}
 
 ${instructions}`,
-  });
+    });
 
-  return object;
+    console.log(`[AI Extractor] ✓ Extraction successful for email ${email.id}: ${object.isTransactional ? object.transactions.length + " transaction(s)" : "non-transactional"}`);
+
+    return object;
+  } catch (error) {
+    console.error(`[AI Extractor] ✗ Extraction failed for email ${email.id} (${email.subject}) with model ${modelId}:`, error);
+
+    // Re-throw with more context
+    if (error instanceof Error) {
+      error.message = `[Model: ${modelId}] ${error.message}`;
+    }
+    throw error;
+  }
 }
 
 /**

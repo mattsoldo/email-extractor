@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { jobs, extractionLogs, transactions, accounts, extractionRuns } from "@/db/schema";
+import { jobs, extractionLogs, transactions, accounts, extractionRuns, aiModels } from "@/db/schema";
 import { eq, desc, and } from "drizzle-orm";
 import { getJobProgress, cancelJob } from "@/services/job-manager";
 
@@ -37,10 +37,32 @@ export async function GET(
       .limit(logLimit);
   }
 
-  // Get extraction run if exists
+  // Get extraction run if exists (with model info)
   const runResult = await db
-    .select()
+    .select({
+      id: extractionRuns.id,
+      jobId: extractionRuns.jobId,
+      setId: extractionRuns.setId,
+      version: extractionRuns.version,
+      name: extractionRuns.name,
+      description: extractionRuns.description,
+      modelId: extractionRuns.modelId,
+      modelName: aiModels.name,
+      promptId: extractionRuns.promptId,
+      softwareVersion: extractionRuns.softwareVersion,
+      emailsProcessed: extractionRuns.emailsProcessed,
+      transactionsCreated: extractionRuns.transactionsCreated,
+      informationalCount: extractionRuns.informationalCount,
+      errorCount: extractionRuns.errorCount,
+      config: extractionRuns.config,
+      stats: extractionRuns.stats,
+      status: extractionRuns.status,
+      startedAt: extractionRuns.startedAt,
+      completedAt: extractionRuns.completedAt,
+      createdAt: extractionRuns.createdAt,
+    })
     .from(extractionRuns)
+    .leftJoin(aiModels, eq(extractionRuns.modelId, aiModels.id))
     .where(eq(extractionRuns.jobId, id))
     .limit(1);
   const extractionRun = runResult[0] || null;

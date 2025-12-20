@@ -28,6 +28,7 @@ import {
   Info,
   Ban,
   Loader2,
+  Cpu,
 } from "lucide-react";
 
 interface JobProgress {
@@ -40,6 +41,8 @@ interface JobProgress {
   skippedItems: number;
   informationalItems: number;
   errorMessage: string | null;
+  modelId?: string | null;
+  modelName?: string | null;
   cancelNotes?: string | null;
   startedAt: string | null;
   completedAt: string | null;
@@ -65,6 +68,8 @@ interface JobDetailResponse {
   logs: ExtractionLog[];
   extractionRun: {
     id: string;
+    modelId: string;
+    modelName: string | null;
     transactionsCreated: number;
     informationalCount: number;
     errorCount: number;
@@ -254,6 +259,12 @@ export default function JobDetailPage() {
               {live && (
                 <Badge variant="outline" className="text-green-600 border-green-300">
                   Live
+                </Badge>
+              )}
+              {(job.modelName || data.extractionRun?.modelName) && (
+                <Badge variant="outline" className="text-xs font-mono">
+                  <Cpu className="h-3 w-3 mr-1" />
+                  {job.modelName || data.extractionRun?.modelName}
                 </Badge>
               )}
             </div>

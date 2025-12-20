@@ -123,3 +123,19 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Sidebar layout styles */
+body.sidebar-expanded .main-content {
+  padding-left: 16rem; /* 256px */
+}
+
+body.sidebar-collapsed .main-content {
+  padding-left: 4rem; /* 64px */
+}
+
+@media (max-width: 1024px) {
+  body .main-content {
+    padding-left: 0 !important;
+    padding-top: 4rem; /* 64px for mobile header */
+  }
+}

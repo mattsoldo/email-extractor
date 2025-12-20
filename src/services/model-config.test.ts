@@ -40,10 +40,10 @@ describe("model-config", () => {
       }
     });
 
-    it("should have Claude 4.5 series models", () => {
+    it("should have Claude 3.5 and 4 series models", () => {
       const claudeModels = getModelsByProvider("anthropic");
-      const claude45 = claudeModels.filter((m) => m.name.includes("4.5"));
-      expect(claude45.length).toBeGreaterThan(0);
+      const claude35or4 = claudeModels.filter((m) => m.name.includes("3.5") || m.name.includes(" 4"));
+      expect(claude35or4.length).toBeGreaterThan(0);
     });
 
     it("should have GPT-5 series models", () => {
@@ -73,9 +73,9 @@ describe("model-config", () => {
 
   describe("getModelConfig", () => {
     it("should return model config for valid Claude ID", () => {
-      const model = getModelConfig("claude-sonnet-4-5-20241022");
+      const model = getModelConfig("claude-3-5-sonnet-20241022");
       expect(model).toBeDefined();
-      expect(model?.name).toBe("Claude Sonnet 4.5");
+      expect(model?.name).toBe("Claude 3.5 Sonnet");
     });
 
     it("should return model config for valid GPT ID", () => {
@@ -175,7 +175,7 @@ describe("model-config", () => {
   describe("estimateEmailCost", () => {
     it("should calculate cost for valid Claude model", () => {
       const emailContent = "This is a test email with some content about dividends.";
-      const result = estimateEmailCost(emailContent, "claude-sonnet-4-5-20241022");
+      const result = estimateEmailCost(emailContent, "claude-3-5-sonnet-20241022");
 
       expect(result.inputTokens).toBeGreaterThan(500); // Content + 500 overhead
       expect(result.outputTokens).toBe(400); // Fixed estimate
@@ -196,7 +196,7 @@ describe("model-config", () => {
     });
 
     it("should include prompt overhead in tokens", () => {
-      const result1 = estimateEmailCost("", "claude-sonnet-4-5-20241022");
+      const result1 = estimateEmailCost("", "claude-3-5-sonnet-20241022");
       expect(result1.inputTokens).toBe(500); // Just the overhead
     });
 
@@ -204,8 +204,8 @@ describe("model-config", () => {
       const email = "Test email content for cost comparison";
 
       // Opus is more expensive than Haiku
-      const expensiveCost = estimateEmailCost(email, "claude-opus-4-5-20251101");
-      const cheapCost = estimateEmailCost(email, "claude-haiku-4-5-20241022");
+      const expensiveCost = estimateEmailCost(email, "claude-3-opus-20240229");
+      const cheapCost = estimateEmailCost(email, "claude-3-5-haiku-20241022");
 
       expect(expensiveCost.estimatedCost).toBeGreaterThan(cheapCost.estimatedCost);
     });
@@ -214,7 +214,7 @@ describe("model-config", () => {
       const email = "Test email content for cost comparison";
 
       const geminiFashCost = estimateEmailCost(email, "gemini-2.0-flash");
-      const claudeHaikuCost = estimateEmailCost(email, "claude-haiku-4-5-20241022");
+      const claudeHaikuCost = estimateEmailCost(email, "claude-3-5-haiku-20241022");
 
       expect(geminiFashCost.estimatedCost).toBeLessThan(claudeHaikuCost.estimatedCost);
     });
@@ -228,7 +228,7 @@ describe("model-config", () => {
     ];
 
     it("should calculate total cost for batch", () => {
-      const result = estimateBatchCost(testEmails, "claude-sonnet-4-5-20241022");
+      const result = estimateBatchCost(testEmails, "claude-3-5-sonnet-20241022");
 
       expect(result.totalEmails).toBe(3);
       expect(result.totalInputTokens).toBeGreaterThan(0);
@@ -238,7 +238,7 @@ describe("model-config", () => {
     });
 
     it("should handle empty batch", () => {
-      const result = estimateBatchCost([], "claude-sonnet-4-5-20241022");
+      const result = estimateBatchCost([], "claude-3-5-sonnet-20241022");
 
       expect(result.totalEmails).toBe(0);
       expect(result.estimatedCost).toBe(0);
@@ -255,14 +255,14 @@ describe("model-config", () => {
         { bodyText: null, bodyHtml: "<div>More HTML</div>" },
       ];
 
-      const result = estimateBatchCost(emailsWithHtml, "claude-sonnet-4-5-20241022");
+      const result = estimateBatchCost(emailsWithHtml, "claude-3-5-sonnet-20241022");
       expect(result.totalInputTokens).toBeGreaterThan(1000); // Overhead for 2 emails
     });
 
     it("should handle emails with no content", () => {
       const emptyEmails = [{ bodyText: null, bodyHtml: null }, {}];
 
-      const result = estimateBatchCost(emptyEmails, "claude-sonnet-4-5-20241022");
+      const result = estimateBatchCost(emptyEmails, "claude-3-5-sonnet-20241022");
       expect(result.totalInputTokens).toBe(1000); // Just overhead (500 * 2)
     });
   });
@@ -345,12 +345,12 @@ describe("model-config", () => {
 
     it("should return true for Anthropic model when API key is set", () => {
       process.env.ANTHROPIC_API_KEY = "test-key";
-      expect(isModelAvailable("claude-sonnet-4-5-20241022")).toBe(true);
+      expect(isModelAvailable("claude-3-5-sonnet-20241022")).toBe(true);
     });
 
     it("should return false for Anthropic model when API key is not set", () => {
       delete process.env.ANTHROPIC_API_KEY;
-      expect(isModelAvailable("claude-sonnet-4-5-20241022")).toBe(false);
+      expect(isModelAvailable("claude-3-5-sonnet-20241022")).toBe(false);
     });
 
     it("should return true for OpenAI model when API key is set", () => {

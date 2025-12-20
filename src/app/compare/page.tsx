@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, Suspense } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { Navigation } from "@/components/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -27,6 +29,7 @@ import {
   Trophy,
   Scale,
   ArrowLeftRight,
+  Eye,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -84,13 +87,15 @@ interface ComparisonResult {
   comparisons: TransactionComparison[];
 }
 
-export default function ComparePage() {
+function ComparePageContent() {
+  const searchParams = useSearchParams();
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [runAId, setRunAId] = useState<string>("");
   const [runBId, setRunBId] = useState<string>("");
   const [comparison, setComparison] = useState<ComparisonResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [initialized, setInitialized] = useState(false);
 
   const fetchRuns = useCallback(async () => {
     try {
@@ -105,6 +110,46 @@ export default function ComparePage() {
   useEffect(() => {
     fetchRuns();
   }, [fetchRuns]);
+
+  // Initialize from URL parameters and trigger comparison
+  useEffect(() => {
+    if (!initialized && runs.length > 0) {
+      const urlRunA = searchParams.get("runA");
+      const urlRunB = searchParams.get("runB");
+
+      if (urlRunA && urlRunB) {
+        setRunAId(urlRunA);
+        setRunBId(urlRunB);
+        setInitialized(true);
+
+        // Trigger comparison automatically with URL parameters
+        const loadComparison = async () => {
+          setLoading(true);
+          try {
+            const res = await fetch(`/api/compare?runA=${urlRunA}&runB=${urlRunB}`);
+            const data = await res.json();
+            if (res.ok) {
+              setComparison(data);
+              // Auto-expand items with differences
+              const toExpand = new Set<string>();
+              data.comparisons.forEach((c: TransactionComparison) => {
+                if (c.status !== "match") {
+                  toExpand.add(c.emailId);
+                }
+              });
+              setExpandedItems(toExpand);
+            }
+          } catch (error) {
+            console.error("Failed to load comparison:", error);
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        loadComparison();
+      }
+    }
+  }, [runs, searchParams, initialized]);
 
   const fetchComparison = async () => {
     if (!runAId || !runBId) {
@@ -416,6 +461,19 @@ export default function ComparePage() {
                             <span className="text-sm font-medium truncate">
                               {item.emailSubject || "No subject"}
                             </span>
+                            <Link
+                              href={`/emails/${item.emailId}?from=compare&runA=${runAId}&runB=${runBId}`}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-gray-500 hover:text-blue-600"
+                                title="View original email"
+                              >
+                                <Eye className="h-4 w-4" />
+                              </Button>
+                            </Link>
                           </div>
                           <div className="flex items-center gap-2">
                             {item.winnerTransactionId && (
@@ -584,5 +642,24 @@ export default function ComparePage() {
         )}
       </main>
     </div>
+  );
+}
+
+export default function ComparePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-gray-50">
+          <Navigation />
+          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="flex items-center justify-center h-64">
+              <RefreshCw className="h-8 w-8 animate-spin text-gray-400" />
+            </div>
+          </main>
+        </div>
+      }
+    >
+      <ComparePageContent />
+    </Suspense>
   );
 }

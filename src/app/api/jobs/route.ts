@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { jobs, extractionRuns } from "@/db/schema";
+import { jobs, extractionRuns, aiModels, emailSets } from "@/db/schema";
 import { desc, eq, or, inArray } from "drizzle-orm";
 import {
   startExtractionJob,
@@ -20,8 +20,21 @@ export async function GET(request: NextRequest) {
 
     // Also get running extraction runs from database (in case of server restart)
     const runningRuns = await db
-      .select()
+      .select({
+        id: extractionRuns.id,
+        jobId: extractionRuns.jobId,
+        setId: extractionRuns.setId,
+        modelId: extractionRuns.modelId,
+        modelName: aiModels.name,
+        emailsProcessed: extractionRuns.emailsProcessed,
+        errorCount: extractionRuns.errorCount,
+        informationalCount: extractionRuns.informationalCount,
+        startedAt: extractionRuns.startedAt,
+        emailCount: emailSets.emailCount,
+      })
       .from(extractionRuns)
+      .leftJoin(aiModels, eq(extractionRuns.modelId, aiModels.id))
+      .leftJoin(emailSets, eq(extractionRuns.setId, emailSets.id))
       .where(eq(extractionRuns.status, "running"))
       .orderBy(desc(extractionRuns.startedAt));
 
@@ -30,12 +43,14 @@ export async function GET(request: NextRequest) {
       id: run.jobId || run.id,
       type: "extraction" as const,
       status: "running" as const,
-      totalItems: run.emailsProcessed,
+      totalItems: run.emailCount || run.emailsProcessed,
       processedItems: run.emailsProcessed,
       failedItems: run.errorCount,
       skippedItems: 0,
       informationalItems: run.informationalCount,
       errorMessage: null,
+      modelId: run.modelId,
+      modelName: run.modelName,
       startedAt: run.startedAt,
       completedAt: null,
     }));

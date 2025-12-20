@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Navigation } from "@/components/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,6 +24,7 @@ import {
   Loader2,
   Trophy,
   Cpu,
+  Scale,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -64,18 +65,52 @@ interface ExtractionRun {
   startedAt: string;
 }
 
+interface EmailExtraction {
+  id: string;
+  emailId: string;
+  runId: string;
+  status: string;
+  rawExtraction: Record<string, unknown> | null;
+  confidence: string | null;
+  processingTimeMs: number | null;
+  transactionIds: string[] | null;
+  createdAt: string;
+  error: string | null;
+  runVersion: number | null;
+  runStartedAt: string | null;
+  runCompletedAt: string | null;
+  modelId: string | null;
+  modelName: string | null;
+  promptId: string | null;
+  promptName: string | null;
+}
+
 export default function EmailViewerPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const emailId = params.id as string;
+
+  // Check if we're in comparison mode from the compare page
+  const fromCompare = searchParams.get("from") === "compare";
+  const runAId = searchParams.get("runA");
+  const runBId = searchParams.get("runB");
 
   const [email, setEmail] = useState<Email | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [transactionsByRun, setTransactionsByRun] = useState<Record<string, Transaction[]>>({});
+  const [extractions, setExtractions] = useState<EmailExtraction[]>([]);
   const [winnerTransactionId, setWinnerTransactionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("rendered");
+  const [compareMode, setCompareMode] = useState(false);
+  const [selectedExtractions, setSelectedExtractions] = useState<string[]>([]);
+  const [comparisonData, setComparisonData] = useState<{
+    runATransaction: Transaction | null;
+    runBTransaction: Transaction | null;
+    differences: string[];
+  } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const fetchEmail = async () => {
@@ -86,6 +121,7 @@ export default function EmailViewerPage() {
       setTransactions(data.transactions || []);
       setRuns(data.runs || []);
       setTransactionsByRun(data.transactionsByRun || {});
+      setExtractions(data.extractions || []);
       setWinnerTransactionId(data.winnerTransactionId || null);
     } catch (error) {
       console.error("Failed to fetch email:", error);
@@ -94,9 +130,38 @@ export default function EmailViewerPage() {
     }
   };
 
+  const fetchComparisonData = async () => {
+    if (!fromCompare || !runAId || !runBId) return;
+
+    try {
+      const res = await fetch(`/api/compare?runA=${runAId}&runB=${runBId}`);
+      const data = await res.json();
+
+      if (res.ok) {
+        // Find the comparison for this specific email
+        const emailComparison = data.comparisons.find(
+          (c: any) => c.emailId === emailId
+        );
+
+        if (emailComparison) {
+          setComparisonData({
+            runATransaction: emailComparison.runATransaction,
+            runBTransaction: emailComparison.runBTransaction,
+            differences: emailComparison.differences,
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Failed to fetch comparison data:", error);
+    }
+  };
+
   useEffect(() => {
     fetchEmail();
-  }, [emailId]);
+    if (fromCompare) {
+      fetchComparisonData();
+    }
+  }, [emailId, fromCompare]);
 
   // Update iframe content when email or tab changes
   useEffect(() => {
@@ -205,6 +270,26 @@ export default function EmailViewerPage() {
     return `v${run.version} - ${modelName}`;
   };
 
+  const toggleCompareMode = () => {
+    setCompareMode(!compareMode);
+    setSelectedExtractions([]);
+  };
+
+  const toggleExtractionSelection = (extractionId: string) => {
+    setSelectedExtractions((prev) => {
+      if (prev.includes(extractionId)) {
+        return prev.filter((id) => id !== extractionId);
+      } else if (prev.length < 2) {
+        return [...prev, extractionId];
+      }
+      return prev;
+    });
+  };
+
+  const getSelectedExtractionData = () => {
+    return selectedExtractions.map((id) => extractions.find((e) => e.id === id)).filter(Boolean) as EmailExtraction[];
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50">
@@ -241,9 +326,19 @@ export default function EmailViewerPage() {
       <main className="max-w-5xl mx-auto px-4 py-8">
         {/* Header */}
         <div className="flex items-center gap-4 mb-6">
-          <Button variant="ghost" size="sm" onClick={() => router.push("/emails")}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              if (fromCompare && runAId && runBId) {
+                router.push(`/compare?runA=${runAId}&runB=${runBId}`);
+              } else {
+                router.push("/emails");
+              }
+            }}
+          >
             <ArrowLeft className="h-4 w-4 mr-2" />
-            Back
+            {fromCompare ? "Back to Comparison" : "Back"}
           </Button>
           <div className="flex-1" />
           {(email.extractionStatus === "failed" || email.extractionStatus === "skipped") && (
@@ -367,6 +462,110 @@ export default function EmailViewerPage() {
             </Tabs>
           </CardContent>
         </Card>
+
+        {/* Comparison View (when coming from compare page) */}
+        {fromCompare && comparisonData && (
+          <Card className="mb-6">
+            <div className="p-4 border-b">
+              <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+                <Scale className="h-5 w-5" />
+                Run Comparison
+              </h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Compare extractions from the two selected runs
+              </p>
+            </div>
+            <CardContent className="p-4">
+              {/* Side by side comparison */}
+              <div className="border rounded-lg overflow-hidden mb-4">
+                {/* Header row */}
+                <div className="grid grid-cols-3 gap-4 py-2 px-3 bg-gray-100 border-b font-medium text-sm">
+                  <div>Field</div>
+                  <div className="text-blue-700">Run A</div>
+                  <div className="text-purple-700">Run B</div>
+                </div>
+
+                {/* Data rows */}
+                {[
+                  { label: "Type", key: "type" },
+                  { label: "Amount", key: "amount" },
+                  { label: "Currency", key: "currency" },
+                  { label: "Symbol", key: "symbol" },
+                  { label: "Quantity", key: "quantity" },
+                  { label: "Price", key: "price" },
+                  { label: "Fees", key: "fees" },
+                  { label: "Date", key: "date" },
+                ].map(({ label, key }) => {
+                  const valueA = comparisonData.runATransaction?.[key as keyof Transaction];
+                  const valueB = comparisonData.runBTransaction?.[key as keyof Transaction];
+                  const isDifferent = comparisonData.differences.includes(key);
+
+                  return (
+                    <div
+                      key={key}
+                      className={`grid grid-cols-3 gap-4 py-2 px-3 rounded ${
+                        isDifferent ? "bg-yellow-50 border border-yellow-200" : ""
+                      }`}
+                    >
+                      <div className="text-sm font-medium text-gray-600">{label}</div>
+                      <div className={`text-sm ${isDifferent ? "font-semibold text-blue-700" : "text-gray-900"}`}>
+                        {valueA || "-"}
+                      </div>
+                      <div className={`text-sm ${isDifferent ? "font-semibold text-purple-700" : "text-gray-900"}`}>
+                        {valueB || "-"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Winner designation buttons */}
+              <div className="flex items-center gap-4">
+                <span className="text-sm font-medium text-gray-600">Designate winner:</span>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant={winnerTransactionId === comparisonData.runATransaction?.id ? "default" : "outline"}
+                    className={`gap-1 ${
+                      winnerTransactionId === comparisonData.runATransaction?.id
+                        ? "bg-blue-600 hover:bg-blue-700"
+                        : "border-blue-300 text-blue-700 hover:bg-blue-50"
+                    }`}
+                    onClick={() => setWinner(comparisonData.runATransaction?.id || null)}
+                    disabled={!comparisonData.runATransaction}
+                  >
+                    <Trophy className="h-3 w-3" />
+                    Run A Wins
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={winnerTransactionId === comparisonData.runBTransaction?.id ? "default" : "outline"}
+                    className={`gap-1 ${
+                      winnerTransactionId === comparisonData.runBTransaction?.id
+                        ? "bg-purple-600 hover:bg-purple-700"
+                        : "border-purple-300 text-purple-700 hover:bg-purple-50"
+                    }`}
+                    onClick={() => setWinner(comparisonData.runBTransaction?.id || null)}
+                    disabled={!comparisonData.runBTransaction}
+                  >
+                    <Trophy className="h-3 w-3" />
+                    Run B Wins
+                  </Button>
+                  {winnerTransactionId && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-gray-500"
+                      onClick={() => setWinner(null)}
+                    >
+                      Clear
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Extracted Transactions - Grouped by Run */}
         {transactions.length > 0 && (
@@ -531,6 +730,305 @@ export default function EmailViewerPage() {
               <pre className="p-3 bg-gray-100 rounded-lg text-xs overflow-auto max-h-[300px]">
                 {JSON.stringify(email.rawExtraction, null, 2)}
               </pre>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Extraction History */}
+        {extractions.length > 0 && (
+          <Card className="mt-6">
+            <div className="p-4 border-b">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-3">
+                    <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+                      <Clock className="h-5 w-5" />
+                      Extraction History
+                    </h2>
+                    <Badge variant="outline" className="text-xs">
+                      {extractions.length} attempt(s)
+                    </Badge>
+                  </div>
+                  <p className="text-sm text-gray-500 mt-1">
+                    {compareMode
+                      ? "Select 2 extractions to compare (click cards to select)"
+                      : "All extraction attempts for this email across different runs"}
+                  </p>
+                </div>
+                {extractions.length >= 2 && (
+                  <div className="flex items-center gap-2">
+                    {compareMode && selectedExtractions.length === 2 && (
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          // Comparison view will be shown below
+                          const element = document.getElementById("comparison-view");
+                          element?.scrollIntoView({ behavior: "smooth" });
+                        }}
+                      >
+                        View Comparison
+                      </Button>
+                    )}
+                    <Button
+                      variant={compareMode ? "default" : "outline"}
+                      size="sm"
+                      onClick={toggleCompareMode}
+                    >
+                      {compareMode ? "Cancel Compare" : "Compare"}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+            <CardContent className="p-4">
+              <div className="space-y-4">
+                {extractions.map((extraction) => {
+                  const isSelected = selectedExtractions.includes(extraction.id);
+                  const isSelectable = compareMode && (isSelected || selectedExtractions.length < 2);
+
+                  return (
+                  <div
+                    key={extraction.id}
+                    onClick={() => compareMode && isSelectable && toggleExtractionSelection(extraction.id)}
+                    className={`relative border rounded-lg p-4 transition-all ${
+                      compareMode && isSelectable
+                        ? "cursor-pointer hover:border-blue-500"
+                        : "hover:bg-gray-50"
+                    } ${
+                      isSelected
+                        ? "border-blue-500 bg-blue-50 ring-2 ring-blue-200"
+                        : ""
+                    } ${
+                      compareMode && !isSelectable && !isSelected
+                        ? "opacity-50 cursor-not-allowed"
+                        : ""
+                    }`}
+                  >
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        {getStatusBadge(extraction.status)}
+                        <div className="text-sm text-gray-500">
+                          {format(new Date(extraction.createdAt), "MMM d, yyyy 'at' h:mm a")}
+                        </div>
+                      </div>
+                      {extraction.runVersion && (
+                        <Badge variant="outline" className="text-xs">
+                          v{extraction.runVersion}
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm mb-3">
+                      {extraction.modelName && (
+                        <div className="flex items-center gap-2 text-gray-600">
+                          <Cpu className="h-4 w-4 text-gray-400" />
+                          <span className="font-medium">Model:</span>
+                          <span className="font-mono text-xs">{extraction.modelName}</span>
+                        </div>
+                      )}
+                      {extraction.promptName && (
+                        <div className="flex items-center gap-2 text-gray-600">
+                          <FileText className="h-4 w-4 text-gray-400" />
+                          <span className="font-medium">Prompt:</span>
+                          <span className="truncate">{extraction.promptName}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-6 text-sm text-gray-600">
+                      {extraction.confidence && (
+                        <div className="flex items-center gap-1">
+                          <span className="font-medium">Confidence:</span>
+                          <span className="font-mono">
+                            {(parseFloat(extraction.confidence) * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                      )}
+                      {extraction.processingTimeMs !== null && (
+                        <div className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          <span>{extraction.processingTimeMs}ms</span>
+                        </div>
+                      )}
+                      {extraction.transactionIds && extraction.transactionIds.length > 0 && (
+                        <div className="flex items-center gap-1">
+                          <span className="font-medium">Transactions:</span>
+                          <span>{extraction.transactionIds.length}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {extraction.error && (
+                      <div className="mt-3 p-2 bg-red-50 rounded text-xs text-red-700">
+                        <strong>Error:</strong> {extraction.error}
+                      </div>
+                    )}
+
+                    {extraction.rawExtraction && (
+                      <details className="mt-3">
+                        <summary className="text-xs text-blue-600 cursor-pointer hover:underline">
+                          View raw extraction data
+                        </summary>
+                        <pre className="mt-2 p-2 bg-gray-100 rounded text-xs overflow-auto max-h-[200px]">
+                          {JSON.stringify(extraction.rawExtraction, null, 2)}
+                        </pre>
+                      </details>
+                    )}
+
+                    {compareMode && isSelected && (
+                      <div className="absolute top-2 right-2">
+                        <Badge variant="default" className="bg-blue-600">
+                          Selected {selectedExtractions.indexOf(extraction.id) + 1}
+                        </Badge>
+                      </div>
+                    )}
+                  </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Comparison View */}
+        {compareMode && selectedExtractions.length === 2 && (
+          <Card className="mt-6" id="comparison-view">
+            <div className="p-4 border-b">
+              <h2 className="font-semibold text-gray-900">Extraction Comparison</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Side-by-side comparison of selected extractions
+              </p>
+            </div>
+            <CardContent className="p-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {getSelectedExtractionData().map((extraction, index) => (
+                  <div key={extraction.id} className="border rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-4 pb-3 border-b">
+                      <Badge variant="default" className="bg-blue-600">
+                        Extraction {index + 1}
+                      </Badge>
+                      {getStatusBadge(extraction.status)}
+                    </div>
+
+                    <div className="space-y-3 text-sm">
+                      <div>
+                        <span className="font-medium text-gray-700">Date:</span>
+                        <div className="text-gray-600 mt-1">
+                          {format(new Date(extraction.createdAt), "MMM d, yyyy 'at' h:mm a")}
+                        </div>
+                      </div>
+
+                      {extraction.runVersion && (
+                        <div>
+                          <span className="font-medium text-gray-700">Version:</span>
+                          <div className="text-gray-600 mt-1">v{extraction.runVersion}</div>
+                        </div>
+                      )}
+
+                      {extraction.modelName && (
+                        <div>
+                          <span className="font-medium text-gray-700">Model:</span>
+                          <div className="text-gray-600 mt-1 font-mono text-xs">
+                            {extraction.modelName}
+                          </div>
+                        </div>
+                      )}
+
+                      {extraction.promptName && (
+                        <div>
+                          <span className="font-medium text-gray-700">Prompt:</span>
+                          <div className="text-gray-600 mt-1">{extraction.promptName}</div>
+                        </div>
+                      )}
+
+                      <div className="pt-2 border-t space-y-2">
+                        {extraction.confidence && (
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Confidence:</span>
+                            <span className="font-medium">
+                              {(parseFloat(extraction.confidence) * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                        )}
+                        {extraction.processingTimeMs !== null && (
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Processing Time:</span>
+                            <span className="font-medium">{extraction.processingTimeMs}ms</span>
+                          </div>
+                        )}
+                        {extraction.transactionIds && (
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">Transactions:</span>
+                            <span className="font-medium">{extraction.transactionIds.length}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {extraction.error && (
+                        <div className="p-2 bg-red-50 rounded text-xs text-red-700">
+                          <strong>Error:</strong> {extraction.error}
+                        </div>
+                      )}
+
+                      {extraction.rawExtraction && (
+                        <details className="pt-2 border-t">
+                          <summary className="text-xs text-blue-600 cursor-pointer hover:underline">
+                            View raw data
+                          </summary>
+                          <pre className="mt-2 p-2 bg-gray-100 rounded text-xs overflow-auto max-h-[300px]">
+                            {JSON.stringify(extraction.rawExtraction, null, 2)}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+                <h3 className="font-medium text-blue-900 mb-2">Key Differences</h3>
+                <div className="text-sm text-blue-800 space-y-1">
+                  {(() => {
+                    const [ex1, ex2] = getSelectedExtractionData();
+                    const diffs: string[] = [];
+
+                    if (ex1.modelName !== ex2.modelName) {
+                      diffs.push(`Different models: ${ex1.modelName || "unknown"} vs ${ex2.modelName || "unknown"}`);
+                    }
+                    if (ex1.promptName !== ex2.promptName) {
+                      diffs.push(`Different prompts: ${ex1.promptName || "unknown"} vs ${ex2.promptName || "unknown"}`);
+                    }
+                    if (ex1.status !== ex2.status) {
+                      diffs.push(`Different statuses: ${ex1.status} vs ${ex2.status}`);
+                    }
+                    if ((ex1.transactionIds?.length || 0) !== (ex2.transactionIds?.length || 0)) {
+                      diffs.push(
+                        `Different transaction counts: ${ex1.transactionIds?.length || 0} vs ${ex2.transactionIds?.length || 0}`
+                      );
+                    }
+                    if (ex1.confidence && ex2.confidence) {
+                      const diff = Math.abs(parseFloat(ex1.confidence) - parseFloat(ex2.confidence));
+                      if (diff > 0.05) {
+                        diffs.push(
+                          `Confidence difference: ${(diff * 100).toFixed(1)}% (${(parseFloat(ex1.confidence) * 100).toFixed(0)}% vs ${(parseFloat(ex2.confidence) * 100).toFixed(0)}%)`
+                        );
+                      }
+                    }
+
+                    if (diffs.length === 0) {
+                      return <div>No significant differences detected in metadata</div>;
+                    }
+
+                    return (
+                      <ul className="list-disc list-inside space-y-1">
+                        {diffs.map((diff, i) => (
+                          <li key={i}>{diff}</li>
+                        ))}
+                      </ul>
+                    );
+                  })()}
+                </div>
+              </div>
             </CardContent>
           </Card>
         )}

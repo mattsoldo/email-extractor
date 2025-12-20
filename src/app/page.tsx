@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Navigation } from "@/components/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -50,6 +49,8 @@ interface JobProgress {
   skippedItems: number;
   informationalItems: number;
   errorMessage: string | null;
+  modelId?: string | null;
+  modelName?: string | null;
   startedAt: string | null;
   completedAt: string | null;
 }
@@ -420,10 +421,7 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Navigation />
-
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
           <p className="text-gray-600 mt-1">
@@ -685,6 +683,11 @@ export default function DashboardPage() {
                           >
                             {job.status}
                           </Badge>
+                          {job.modelName && (
+                            <Badge variant="outline" className="text-xs font-mono">
+                              {job.modelName}
+                            </Badge>
+                          )}
                         </div>
                         <div className="flex items-center gap-3">
                           <div className="text-sm text-gray-500">
@@ -925,10 +928,9 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         )}
-      </main>
 
-      {/* Cancellation Confirmation Dialog */}
-      <Dialog open={!!jobToCancel} onOpenChange={(open) => !open && setJobToCancel(null)}>
+        {/* Cancellation Confirmation Dialog */}
+        <Dialog open={!!jobToCancel} onOpenChange={(open) => !open && setJobToCancel(null)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Cancel Extraction Job?</DialogTitle>
@@ -969,7 +971,7 @@ export default function DashboardPage() {
             </Button>
           </DialogFooter>
         </DialogContent>
-      </Dialog>
-    </div>
+        </Dialog>
+      </main>
   );
 }

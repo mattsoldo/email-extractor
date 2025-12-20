@@ -1,6 +1,6 @@
 import { v4 as uuid } from "uuid";
 import { db } from "@/db";
-import { jobs, emails, transactions, accounts, extractionLogs, extractionRuns, prompts, emailExtractions } from "@/db/schema";
+import { jobs, emails, transactions, accounts, extractionLogs, extractionRuns, prompts, emailExtractions, aiModels } from "@/db/schema";
 import { eq, and, inArray, desc, sql } from "drizzle-orm";
 import { scanEmailDirectory, parseEmlFile, toDbEmail, classifyEmail } from "./email-parser";
 import { extractTransaction, type TransactionExtraction, type SingleTransaction, DEFAULT_MODEL_ID } from "./ai-extractor";
@@ -21,6 +21,8 @@ export interface JobProgress {
   skippedItems: number;
   informationalItems: number;
   errorMessage: string | null;
+  modelId?: string | null;
+  modelName?: string | null;
   startedAt: Date | null;
   completedAt: Date | null;
 }
@@ -401,6 +403,18 @@ async function runExtractionJob(
   const setId = options.setId;
   const promptContent = options.promptContent;
 
+  // Get model name for progress display
+  const [modelResult] = await db
+    .select({ name: aiModels.name })
+    .from(aiModels)
+    .where(eq(aiModels.id, modelId))
+    .limit(1);
+  const modelName = modelResult?.name || modelId;
+
+  // Update progress with model info
+  job.progress.modelId = modelId;
+  job.progress.modelName = modelName;
+
   await db
     .update(jobs)
     .set({ status: "running", startedAt: new Date() })
@@ -671,7 +685,7 @@ async function runExtractionJob(
           emailId: pending.emailId,
           runId: extractionRunId,
           status,
-          rawExtraction: extraction as unknown as Record<string, unknown>,
+          rawExtraction: extraction as any,
           confidence: avgConfidence ? avgConfidence.toFixed(2) : null,
           processingTimeMs,
           transactionIds: txIds,

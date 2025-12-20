@@ -13,13 +13,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { format } from "date-fns";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -70,25 +63,6 @@ interface ExtractionRun {
   } | null;
 }
 
-interface RunWithTransactions extends ExtractionRun {
-  transactions: Array<{
-    id: string;
-    type: string;
-    date: string;
-    amount: string | null;
-    symbol: string | null;
-    account: {
-      displayName: string;
-      institution: string | null;
-    } | null;
-    email: {
-      id: string;
-      filename: string;
-      subject: string | null;
-    } | null;
-  }>;
-}
-
 interface Pagination {
   page: number;
   limit: number;
@@ -107,8 +81,6 @@ export default function RunsPage() {
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedRun, setSelectedRun] = useState<RunWithTransactions | null>(null);
-  const [loadingRun, setLoadingRun] = useState(false);
   const [page, setPage] = useState(1);
 
   const fetchRuns = useCallback(async () => {
@@ -147,22 +119,6 @@ export default function RunsPage() {
 
     return () => clearInterval(interval);
   }, [runs, fetchRuns]);
-
-  const fetchRunDetails = async (runId: string) => {
-    setLoadingRun(true);
-    try {
-      const res = await fetch(`/api/runs/${runId}?limit=50`);
-      const data = await res.json();
-      setSelectedRun({
-        ...data.run,
-        transactions: data.transactions,
-      });
-    } catch (error) {
-      console.error("Failed to fetch run details:", error);
-    } finally {
-      setLoadingRun(false);
-    }
-  };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -373,13 +329,11 @@ export default function RunsPage() {
                         </TableCell>
                         <TableCell>
                           <div className="flex gap-1">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => fetchRunDetails(run.id)}
-                            >
-                              <Eye className="h-4 w-4" />
-                            </Button>
+                            <Link href={`/runs/${run.id}`}>
+                              <Button variant="ghost" size="sm">
+                                <Eye className="h-4 w-4" />
+                              </Button>
+                            </Link>
                             {run.job && (
                               <Link href={`/jobs/${run.job.id}`}>
                                 <Button variant="ghost" size="sm">
@@ -431,190 +385,6 @@ export default function RunsPage() {
             </div>
           </div>
         )}
-
-        {/* Run Detail Dialog */}
-        <Dialog open={!!selectedRun} onOpenChange={() => setSelectedRun(null)}>
-          <DialogContent className="max-w-4xl max-h-[85vh]">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                Extraction Run v{selectedRun?.version}
-                {selectedRun?.name && (
-                  <span className="text-gray-500 font-normal">
-                    - {selectedRun.name}
-                  </span>
-                )}
-              </DialogTitle>
-            </DialogHeader>
-
-            {loadingRun ? (
-              <div className="flex items-center justify-center py-8">
-                Loading run details...
-              </div>
-            ) : selectedRun ? (
-              <ScrollArea className="h-[70vh]">
-                <div className="space-y-6 pr-4">
-                  {/* Run Overview */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="bg-gray-50 rounded-lg p-3">
-                      <div className="text-xs text-gray-500">Status</div>
-                      <div className="mt-1">
-                        {getStatusBadge(selectedRun.status)}
-                      </div>
-                    </div>
-                    <div className="bg-gray-50 rounded-lg p-3">
-                      <div className="text-xs text-gray-500">Emails</div>
-                      <div className="text-lg font-semibold">
-                        {selectedRun.emailsProcessed}
-                      </div>
-                    </div>
-                    <div className="bg-gray-50 rounded-lg p-3">
-                      <div className="text-xs text-gray-500">Transactions</div>
-                      <div className="text-lg font-semibold text-green-600">
-                        {selectedRun.transactionsCreated}
-                      </div>
-                    </div>
-                    <div className="bg-gray-50 rounded-lg p-3">
-                      <div className="text-xs text-gray-500">Avg Confidence</div>
-                      <div className="text-lg font-semibold">
-                        {selectedRun.stats?.avgConfidence
-                          ? `${(selectedRun.stats.avgConfidence * 100).toFixed(0)}%`
-                          : "-"}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Transaction Type Breakdown */}
-                  {selectedRun.stats?.byType &&
-                    Object.keys(selectedRun.stats.byType).length > 0 && (
-                      <div>
-                        <h3 className="font-semibold mb-2">
-                          Transactions by Type
-                        </h3>
-                        <div className="flex flex-wrap gap-2">
-                          {Object.entries(selectedRun.stats.byType).map(
-                            ([type, count]) => (
-                              <Badge
-                                key={type}
-                                variant="secondary"
-                                className="text-sm"
-                              >
-                                {type.replace(/_/g, " ")}: {count}
-                              </Badge>
-                            )
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                  {/* Run Metadata */}
-                  <div className="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <span className="text-gray-500">Model:</span>{" "}
-                      <span className="font-mono text-xs">
-                        {selectedRun.modelId || "-"}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-gray-500">Duration:</span>{" "}
-                      {selectedRun.stats?.processingTimeMs
-                        ? formatDuration(selectedRun.stats.processingTimeMs)
-                        : "-"}
-                    </div>
-                    <div>
-                      <span className="text-gray-500">Started:</span>{" "}
-                      {format(
-                        new Date(selectedRun.startedAt),
-                        "MMM d, yyyy h:mm:ss a"
-                      )}
-                    </div>
-                    <div>
-                      <span className="text-gray-500">Completed:</span>{" "}
-                      {selectedRun.completedAt
-                        ? format(
-                            new Date(selectedRun.completedAt),
-                            "MMM d, yyyy h:mm:ss a"
-                          )
-                        : "-"}
-                    </div>
-                  </div>
-
-                  {/* Description */}
-                  {selectedRun.description && (
-                    <div>
-                      <h3 className="font-semibold mb-1">Description</h3>
-                      <p className="text-gray-600 text-sm">
-                        {selectedRun.description}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Sample Transactions */}
-                  {selectedRun.transactions &&
-                    selectedRun.transactions.length > 0 && (
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <h3 className="font-semibold">
-                            Transactions ({selectedRun.transactionsCreated})
-                          </h3>
-                          <Link
-                            href={`/transactions?runId=${selectedRun.id}`}
-                            className="text-sm text-blue-600 hover:underline flex items-center gap-1"
-                          >
-                            View all
-                            <ArrowRight className="h-3 w-3" />
-                          </Link>
-                        </div>
-                        <Table>
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Date</TableHead>
-                              <TableHead>Type</TableHead>
-                              <TableHead>Symbol</TableHead>
-                              <TableHead>Account</TableHead>
-                              <TableHead className="text-right">
-                                Amount
-                              </TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {selectedRun.transactions
-                              .slice(0, 10)
-                              .map((tx) => (
-                                <TableRow key={tx.id}>
-                                  <TableCell className="text-sm text-gray-600">
-                                    {format(new Date(tx.date), "MMM d, yyyy")}
-                                  </TableCell>
-                                  <TableCell>
-                                    <Badge variant="secondary" className="text-xs">
-                                      {tx.type.replace(/_/g, " ")}
-                                    </Badge>
-                                  </TableCell>
-                                  <TableCell className="font-mono text-sm">
-                                    {tx.symbol || "-"}
-                                  </TableCell>
-                                  <TableCell className="text-sm">
-                                    {tx.account?.displayName || "-"}
-                                  </TableCell>
-                                  <TableCell className="text-right font-medium">
-                                    {formatAmount(tx.amount)}
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                          </TableBody>
-                        </Table>
-                        {selectedRun.transactions.length > 10 && (
-                          <p className="text-sm text-gray-500 mt-2 text-center">
-                            Showing 10 of {selectedRun.transactionsCreated}{" "}
-                            transactions
-                          </p>
-                        )}
-                      </div>
-                    )}
-                </div>
-              </ScrollArea>
-            ) : null}
-          </DialogContent>
-        </Dialog>
       </main>
     </div>
   );

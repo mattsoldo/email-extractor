@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { emails, transactions, extractionRuns } from "@/db/schema";
-import { eq, inArray } from "drizzle-orm";
+import { emails, transactions, extractionRuns, emailExtractions, aiModels, prompts } from "@/db/schema";
+import { eq, inArray, desc } from "drizzle-orm";
 
 // GET /api/emails/[id] - Get single email with all transactions from different runs
 export async function GET(
@@ -47,11 +47,43 @@ export async function GET(
     transactionsByRun.get(runId)!.push(t);
   }
 
+  // Get all extractions for this email (with run, model, and prompt info)
+  const extractions = await db
+    .select({
+      id: emailExtractions.id,
+      emailId: emailExtractions.emailId,
+      runId: emailExtractions.runId,
+      status: emailExtractions.status,
+      rawExtraction: emailExtractions.rawExtraction,
+      confidence: emailExtractions.confidence,
+      processingTimeMs: emailExtractions.processingTimeMs,
+      transactionIds: emailExtractions.transactionIds,
+      createdAt: emailExtractions.createdAt,
+      error: emailExtractions.error,
+      // Run info
+      runVersion: extractionRuns.version,
+      runStartedAt: extractionRuns.startedAt,
+      runCompletedAt: extractionRuns.completedAt,
+      // Model info
+      modelId: aiModels.id,
+      modelName: aiModels.name,
+      // Prompt info
+      promptId: prompts.id,
+      promptName: prompts.name,
+    })
+    .from(emailExtractions)
+    .leftJoin(extractionRuns, eq(emailExtractions.runId, extractionRuns.id))
+    .leftJoin(aiModels, eq(extractionRuns.modelId, aiModels.id))
+    .leftJoin(prompts, eq(extractionRuns.promptId, prompts.id))
+    .where(eq(emailExtractions.emailId, id))
+    .orderBy(desc(emailExtractions.createdAt));
+
   return NextResponse.json({
     email: email[0],
     transactions: emailTransactions,
     runs,
     transactionsByRun: Object.fromEntries(transactionsByRun),
+    extractions,
     winnerTransactionId: email[0].winnerTransactionId,
   });
 }

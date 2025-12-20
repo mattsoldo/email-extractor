@@ -1,6 +1,6 @@
 import { v4 as uuid } from "uuid";
 import { db } from "@/db";
-import { jobs, emails, transactions, accounts, extractionLogs, extractionRuns, prompts } from "@/db/schema";
+import { jobs, emails, transactions, accounts, extractionLogs, extractionRuns, prompts, emailExtractions } from "@/db/schema";
 import { eq, and, inArray, desc, sql } from "drizzle-orm";
 import { scanEmailDirectory, parseEmlFile, toDbEmail, classifyEmail } from "./email-parser";
 import { extractTransaction, type TransactionExtraction, type SingleTransaction, DEFAULT_MODEL_ID } from "./ai-extractor";
@@ -371,6 +371,14 @@ interface PendingTransaction {
   transactionIndex: number; // Index within the email (for emails with multiple transactions)
 }
 
+// Type for email extraction records to create
+interface PendingEmailExtraction {
+  emailId: string;
+  extraction: TransactionExtraction;
+  startTime: number;
+  endTime: number;
+}
+
 async function runExtractionJob(
   jobId: string,
   options: {
@@ -433,6 +441,8 @@ async function runExtractionJob(
 
   // Collect all pending transactions for atomic insert at the end
   const pendingTransactions: PendingTransaction[] = [];
+  // Collect all email extractions to create records
+  const pendingExtractions: PendingEmailExtraction[] = [];
   // Track email updates to apply atomically
   const emailUpdates: Array<{
     id: string;
@@ -489,9 +499,11 @@ async function runExtractionJob(
             headers: (email.headers as Record<string, string>) || {},
           };
 
+          const startTime = Date.now();
           const extraction = await extractTransaction(parsedEmail, modelId, promptContent);
+          const endTime = Date.now();
 
-          return { email, extraction };
+          return { email, extraction, startTime, endTime };
         })
       );
 
@@ -501,7 +513,15 @@ async function runExtractionJob(
         const email = batch[j];
 
         if (result.status === "fulfilled") {
-          const { extraction } = result.value;
+          const { extraction, startTime, endTime } = result.value;
+
+          // Always add to pending extractions (for email_extractions table)
+          pendingExtractions.push({
+            emailId: email.id,
+            extraction,
+            startTime,
+            endTime,
+          });
 
           if (extraction.isTransactional && extraction.transactions.length > 0) {
             // This email contains one or more financial transactions
@@ -574,7 +594,10 @@ async function runExtractionJob(
 
     // Use database transaction for true atomicity
     await db.transaction(async (tx) => {
-      // Create all transactions
+      // Track transaction IDs by email for email_extractions
+      const transactionIdsByEmail = new Map<string, string[]>();
+
+      // Create all transactions and capture IDs
       for (const pending of pendingTransactions) {
         const txData = pending.transaction;
 
@@ -605,10 +628,53 @@ async function runExtractionJob(
 
         const normalizedTx = normalizeTransaction(extractionForNormalize, fromAccount?.id, toAccount?.id);
 
-        await tx.insert(transactions).values({
+        // Insert and capture the transaction ID
+        const [created] = await tx.insert(transactions).values({
           ...normalizedTx,
           sourceEmailId: pending.emailId,
           extractionRunId,
+        }).returning({ id: transactions.id });
+
+        // Track transaction ID by email
+        if (!transactionIdsByEmail.has(pending.emailId)) {
+          transactionIdsByEmail.set(pending.emailId, []);
+        }
+        transactionIdsByEmail.get(pending.emailId)!.push(created.id);
+      }
+
+      // Create email_extractions records
+      for (const pending of pendingExtractions) {
+        const extraction = pending.extraction;
+        const processingTimeMs = pending.endTime - pending.startTime;
+
+        // Get transaction IDs for this email
+        const txIds = transactionIdsByEmail.get(pending.emailId) || [];
+
+        // Determine status and confidence
+        let status: "completed" | "informational" | "skipped" = "completed";
+        let avgConfidence: number | null = null;
+
+        if (extraction.isTransactional && extraction.transactions.length > 0) {
+          status = "completed";
+          const confidences = extraction.transactions
+            .map(t => t.confidence)
+            .filter((c): c is number => c !== null && c !== undefined);
+          if (confidences.length > 0) {
+            avgConfidence = confidences.reduce((sum, c) => sum + c, 0) / confidences.length;
+          }
+        } else {
+          status = "informational";
+        }
+
+        await tx.insert(emailExtractions).values({
+          id: uuid(),
+          emailId: pending.emailId,
+          runId: extractionRunId,
+          status,
+          rawExtraction: extraction as unknown as Record<string, unknown>,
+          confidence: avgConfidence ? avgConfidence.toFixed(2) : null,
+          processingTimeMs,
+          transactionIds: txIds,
         });
       }
 

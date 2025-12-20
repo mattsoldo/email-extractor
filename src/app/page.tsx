@@ -251,6 +251,13 @@ export default function DashboardPage() {
     return () => clearInterval(interval);
   }, [fetchStats, fetchActiveJobs, fetchModels, fetchEmailSets]);
 
+  // Auto-select set if there's only one
+  useEffect(() => {
+    if (emailSets.length === 1 && !selectedSetId) {
+      setSelectedSetId(emailSets[0].id);
+    }
+  }, [emailSets, selectedSetId]);
+
   // Check eligibility when set or model changes
   useEffect(() => {
     checkEligibility(selectedSetId, selectedModelId);

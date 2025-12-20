@@ -36,6 +36,8 @@ import {
   Ban,
   Loader2,
   ExternalLink,
+  Pause,
+  Play,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -405,10 +407,56 @@ export default function DashboardPage() {
     }
   };
 
+  const handlePauseJob = async (job: JobProgress) => {
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "pause" }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        toast.error(data.error || "Failed to pause job");
+        return;
+      }
+
+      toast.success("Job paused");
+      fetchActiveJobs();
+    } catch (error) {
+      toast.error("Failed to pause job");
+    }
+  };
+
+  const handleResumeJob = async (job: JobProgress) => {
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "resume" }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        toast.error(data.error || "Failed to resume job");
+        return;
+      }
+
+      toast.success("Job resumed");
+      fetchActiveJobs();
+    } catch (error) {
+      toast.error("Failed to resume job");
+    }
+  };
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "running":
         return <RefreshCw className="h-4 w-4 animate-spin text-blue-500" />;
+      case "paused":
+        return <Pause className="h-4 w-4 text-orange-500" />;
       case "completed":
         return <CheckCircle2 className="h-4 w-4 text-green-500" />;
       case "failed":
@@ -709,17 +757,48 @@ export default function DashboardPage() {
                             )}
                           </div>
                           {job.status === "running" && (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0 text-orange-600 hover:text-orange-700 hover:bg-orange-50"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handlePauseJob(job);
+                                }}
+                                title="Pause job"
+                              >
+                                <Pause className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setJobToCancel(job);
+                                }}
+                                title="Cancel job"
+                              >
+                                <XCircle className="h-4 w-4" />
+                              </Button>
+                            </>
+                          )}
+                          {job.status === "paused" && (
                             <Button
                               variant="ghost"
                               size="sm"
-                              className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                              className="h-8 w-8 p-0 text-green-600 hover:text-green-700 hover:bg-green-50"
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                setJobToCancel(job);
+                                handleResumeJob(job);
                               }}
+                              title="Resume job"
                             >
-                              <XCircle className="h-4 w-4" />
+                              <Play className="h-4 w-4" />
                             </Button>
                           )}
                           <ExternalLink className="h-4 w-4 text-gray-400" />

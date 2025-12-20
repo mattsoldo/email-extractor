@@ -9,7 +9,7 @@ import { estimateBatchCost, formatCost, getModelConfig } from "./model-config";
 import { SOFTWARE_VERSION } from "@/config/version";
 
 export type JobType = "email_scan" | "extraction" | "reprocess";
-export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type JobStatus = "pending" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
 export interface JobProgress {
   id: string;
@@ -484,8 +484,37 @@ async function runExtractionJob(
 
     // Process in batches - collect results but don't commit yet
     for (let i = 0; i < emailsToProcess.length; i += concurrency) {
+      // Check if job is cancelled
       if (signal.aborted) {
         throw new Error("Job cancelled");
+      }
+
+      // Check if job is paused and wait until resumed
+      while (true) {
+        const [currentJob] = await db
+          .select({ status: jobs.status })
+          .from(jobs)
+          .where(eq(jobs.id, jobId))
+          .limit(1);
+
+        if (!currentJob) {
+          throw new Error("Job not found");
+        }
+
+        if (currentJob.status === "cancelled") {
+          throw new Error("Job cancelled");
+        }
+
+        if (currentJob.status === "paused") {
+          // Job is paused, update progress and wait
+          job.progress.status = "paused";
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+          continue; // Check again
+        }
+
+        // Job is running, break out of wait loop
+        job.progress.status = "running";
+        break;
       }
 
       const batch = emailsToProcess.slice(i, i + concurrency);

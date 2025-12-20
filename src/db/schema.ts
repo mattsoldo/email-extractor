@@ -40,6 +40,7 @@ export const extractionStatusEnum = pgEnum("extraction_status", [
 export const jobStatusEnum = pgEnum("job_status", [
   "pending",
   "running",
+  "paused",
   "completed",
   "failed",
   "cancelled",

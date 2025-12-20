@@ -187,7 +187,7 @@ export async function DELETE(
   );
 }
 
-// PATCH /api/jobs/[id] - Update job (e.g., add notes to cancelled job)
+// PATCH /api/jobs/[id] - Update job (pause/resume or add notes)
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -195,6 +195,41 @@ export async function PATCH(
   const { id } = await params;
   const body = await request.json();
 
+  // Handle pause/resume actions
+  if (body.action === "pause" || body.action === "resume") {
+    // Get current job status
+    const [job] = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1);
+
+    if (!job) {
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+    }
+
+    if (body.action === "pause") {
+      // Can only pause running jobs
+      if (job.status !== "running") {
+        return NextResponse.json(
+          { error: "Can only pause running jobs" },
+          { status: 400 }
+        );
+      }
+
+      await db.update(jobs).set({ status: "paused" }).where(eq(jobs.id, id));
+      return NextResponse.json({ message: "Job paused", status: "paused" });
+    } else if (body.action === "resume") {
+      // Can only resume paused jobs
+      if (job.status !== "paused") {
+        return NextResponse.json(
+          { error: "Can only resume paused jobs" },
+          { status: 400 }
+        );
+      }
+
+      await db.update(jobs).set({ status: "running" }).where(eq(jobs.id, id));
+      return NextResponse.json({ message: "Job resumed", status: "running" });
+    }
+  }
+
+  // Handle other updates (e.g., cancel notes)
   const updates: Partial<typeof jobs.$inferInsert> = {};
 
   if (body.cancelNotes !== undefined) {

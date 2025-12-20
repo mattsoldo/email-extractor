@@ -29,6 +29,8 @@ import {
   Ban,
   Loader2,
   Cpu,
+  Pause,
+  Play,
 } from "lucide-react";
 
 interface JobProgress {
@@ -122,9 +124,9 @@ export default function JobDetailPage() {
   useEffect(() => {
     fetchJobDetails();
 
-    // Poll for updates if job is running
+    // Poll for updates if job is running, pending, or paused
     const interval = setInterval(() => {
-      if (data?.job.status === "running" || data?.job.status === "pending") {
+      if (data?.job.status === "running" || data?.job.status === "pending" || data?.job.status === "paused") {
         fetchJobDetails();
       }
     }, 2000);
@@ -157,10 +159,52 @@ export default function JobDetailPage() {
     }
   };
 
+  const handlePause = async () => {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "pause" }),
+      });
+
+      if (res.ok) {
+        toast.success("Job paused");
+        fetchJobDetails();
+      } else {
+        const errorData = await res.json();
+        toast.error(errorData.error || "Failed to pause job");
+      }
+    } catch (error) {
+      toast.error("Failed to pause job");
+    }
+  };
+
+  const handleResume = async () => {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "resume" }),
+      });
+
+      if (res.ok) {
+        toast.success("Job resumed");
+        fetchJobDetails();
+      } else {
+        const errorData = await res.json();
+        toast.error(errorData.error || "Failed to resume job");
+      }
+    } catch (error) {
+      toast.error("Failed to resume job");
+    }
+  };
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "running":
         return <RefreshCw className="h-5 w-5 animate-spin text-blue-500" />;
+      case "paused":
+        return <Pause className="h-5 w-5 text-orange-500" />;
       case "completed":
         return <CheckCircle2 className="h-5 w-5 text-green-500" />;
       case "failed":
@@ -178,6 +222,8 @@ export default function JobDetailPage() {
     switch (status) {
       case "running":
         return "default";
+      case "paused":
+        return "outline";
       case "completed":
         return "secondary";
       case "failed":
@@ -235,6 +281,7 @@ export default function JobDetailPage() {
   const { job, live, logs, summary } = data;
   const progress = job.totalItems > 0 ? (job.processedItems / job.totalItems) * 100 : 0;
   const isRunning = job.status === "running" || job.status === "pending";
+  const isPaused = job.status === "paused";
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -270,15 +317,35 @@ export default function JobDetailPage() {
             </div>
           </div>
 
-          {isRunning && (
-            <Button
-              variant="destructive"
-              onClick={() => setShowCancelDialog(true)}
-            >
-              <Ban className="h-4 w-4 mr-2" />
-              Cancel Job
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {isRunning && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={handlePause}
+                >
+                  <Pause className="h-4 w-4 mr-2" />
+                  Pause
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => setShowCancelDialog(true)}
+                >
+                  <Ban className="h-4 w-4 mr-2" />
+                  Cancel Job
+                </Button>
+              </>
+            )}
+            {isPaused && (
+              <Button
+                variant="default"
+                onClick={handleResume}
+              >
+                <Play className="h-4 w-4 mr-2" />
+                Resume
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Progress Card */}

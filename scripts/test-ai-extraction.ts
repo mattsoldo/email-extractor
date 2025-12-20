@@ -11,7 +11,7 @@ import { readdirSync } from "fs";
 config({ path: ".env.local" });
 
 import { parseEmlFile } from "../src/services/email-parser";
-import { extractTransaction, DEFAULT_EXTRACTION_INSTRUCTIONS } from "../src/services/ai-extractor";
+import { extractTransaction } from "../src/services/ai-extractor";
 import { AVAILABLE_MODELS, isProviderConfigured } from "../src/services/model-config";
 
 async function main() {

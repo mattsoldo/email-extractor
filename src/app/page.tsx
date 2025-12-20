@@ -13,6 +13,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
   RefreshCw,
@@ -133,11 +141,19 @@ export default function DashboardPage() {
   const [selectedModelId, setSelectedModelId] = useState<string>("");
   const [costEstimates, setCostEstimates] = useState<Record<string, CostEstimate>>({});
 
+  // Prompt selection state
+  const [prompts, setPrompts] = useState<Array<{ id: string; name: string; description: string | null; isDefault: boolean }>>([]);
+  const [selectedPromptId, setSelectedPromptId] = useState<string>("");
+
   // Set selection state
   const [emailSets, setEmailSets] = useState<EmailSet[]>([]);
   const [selectedSetId, setSelectedSetId] = useState<string>("");
   const [eligibility, setEligibility] = useState<EligibilityCheck | null>(null);
   const [checkingEligibility, setCheckingEligibility] = useState(false);
+
+  // Cancellation state
+  const [jobToCancel, setJobToCancel] = useState<JobProgress | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -248,15 +264,30 @@ export default function DashboardPage() {
     }
   }, []);
 
-  const checkEligibility = useCallback(async (setId: string, modelId: string) => {
-    if (!setId || !modelId) {
+  const fetchPrompts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/prompts");
+      const data = await res.json();
+      setPrompts(data.prompts || []);
+
+      // Auto-select default prompt if available
+      if (data.defaultPromptId && !selectedPromptId) {
+        setSelectedPromptId(data.defaultPromptId);
+      }
+    } catch (error) {
+      console.error("Failed to fetch prompts:", error);
+    }
+  }, [selectedPromptId]);
+
+  const checkEligibility = useCallback(async (setId: string, modelId: string, promptId: string) => {
+    if (!setId || !modelId || !promptId) {
       setEligibility(null);
       return;
     }
 
     setCheckingEligibility(true);
     try {
-      const res = await fetch(`/api/extraction-check?setId=${setId}&modelId=${modelId}`);
+      const res = await fetch(`/api/extraction-check?setId=${setId}&modelId=${modelId}&promptId=${promptId}`);
       const data = await res.json();
       setEligibility(data);
     } catch (error) {
@@ -273,6 +304,7 @@ export default function DashboardPage() {
     fetchRecentRuns();
     fetchModels();
     fetchEmailSets();
+    fetchPrompts();
 
     // Poll for active jobs and recent runs
     const interval = setInterval(() => {
@@ -281,7 +313,7 @@ export default function DashboardPage() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [fetchStats, fetchActiveJobs, fetchRecentRuns, fetchModels, fetchEmailSets]);
+  }, [fetchStats, fetchActiveJobs, fetchRecentRuns, fetchModels, fetchEmailSets, fetchPrompts]);
 
   // Auto-select set if there's only one
   useEffect(() => {
@@ -290,14 +322,14 @@ export default function DashboardPage() {
     }
   }, [emailSets, selectedSetId]);
 
-  // Check eligibility when set or model changes
+  // Check eligibility when set, model, or prompt changes
   useEffect(() => {
-    checkEligibility(selectedSetId, selectedModelId);
-  }, [selectedSetId, selectedModelId, checkEligibility]);
+    checkEligibility(selectedSetId, selectedModelId, selectedPromptId);
+  }, [selectedSetId, selectedModelId, selectedPromptId, checkEligibility]);
 
   const startExtractionJob = async () => {
-    if (!selectedSetId || !selectedModelId) {
-      toast.error("Please select both a set and a model");
+    if (!selectedSetId || !selectedModelId || !selectedPromptId) {
+      toast.error("Please select a set, model, and prompt");
       return;
     }
 
@@ -310,6 +342,7 @@ export default function DashboardPage() {
           options: {
             setId: selectedSetId,
             modelId: selectedModelId,
+            promptId: selectedPromptId,
             concurrency: 3,
           },
         }),
@@ -323,12 +356,51 @@ export default function DashboardPage() {
 
       const model = models.find((m) => m.id === selectedModelId);
       const set = emailSets.find((s) => s.id === selectedSetId);
-      toast.success(`Extraction started for "${set?.name}" with ${model?.name || selectedModelId}`);
+      const prompt = prompts.find((p) => p.id === selectedPromptId);
+      toast.success(`Extraction started for "${set?.name}" with ${model?.name || selectedModelId} using "${prompt?.name || 'prompt'}"`);
       fetchActiveJobs();
       // Re-check eligibility after starting
-      checkEligibility(selectedSetId, selectedModelId);
+      checkEligibility(selectedSetId, selectedModelId, selectedPromptId);
     } catch (error) {
       toast.error("Failed to start extraction job");
+    }
+  };
+
+  const handleCancelJob = async () => {
+    if (!jobToCancel) return;
+
+    setIsCancelling(true);
+    try {
+      const res = await fetch(`/api/jobs/${jobToCancel.id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notes: "Cancelled by user from dashboard",
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        toast.error(data.error || "Failed to cancel job");
+        return;
+      }
+
+      toast.success(
+        data.transactionsDeleted
+          ? "Job cancelled and all transactions deleted"
+          : "Job cancelled"
+      );
+
+      // Refresh active jobs
+      fetchActiveJobs();
+
+      // Close dialog
+      setJobToCancel(null);
+    } catch (error) {
+      toast.error("Failed to cancel job");
+    } finally {
+      setIsCancelling(false);
     }
   };
 
@@ -484,6 +556,40 @@ export default function DashboardPage() {
                   </p>
                 )}
               </div>
+
+              {/* Prompt Selector */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700">Extraction Prompt</label>
+                <Select value={selectedPromptId} onValueChange={setSelectedPromptId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a prompt" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {prompts.length === 0 ? (
+                      <div className="px-2 py-3 text-sm text-gray-500 text-center">
+                        No prompts available
+                      </div>
+                    ) : (
+                      prompts.map((prompt) => (
+                        <SelectItem key={prompt.id} value={prompt.id}>
+                          <div className="flex items-center gap-2">
+                            <span>{prompt.name}</span>
+                            {prompt.isDefault && (
+                              <Badge variant="secondary" className="text-xs">Default</Badge>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                {/* Prompt description */}
+                {selectedPromptId && (
+                  <p className="text-xs text-gray-500">
+                    {prompts.find((p) => p.id === selectedPromptId)?.description}
+                  </p>
+                )}
+              </div>
             </div>
 
             {/* Status and Actions Row */}
@@ -507,7 +613,7 @@ export default function DashboardPage() {
               </Button>
 
               {/* Refresh Button */}
-              <Button variant="outline" onClick={() => { fetchStats(); fetchModels(); fetchEmailSets(); if (selectedSetId && selectedModelId) checkEligibility(selectedSetId, selectedModelId); }} className="gap-2">
+              <Button variant="outline" onClick={() => { fetchStats(); fetchModels(); fetchEmailSets(); fetchPrompts(); if (selectedSetId && selectedModelId && selectedPromptId) checkEligibility(selectedSetId, selectedModelId, selectedPromptId); }} className="gap-2">
                 <RefreshCw className="h-4 w-4" />
                 Refresh
               </Button>
@@ -599,6 +705,20 @@ export default function DashboardPage() {
                               </span>
                             )}
                           </div>
+                          {job.status === "running" && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setJobToCancel(job);
+                              }}
+                            >
+                              <XCircle className="h-4 w-4" />
+                            </Button>
+                          )}
                           <ExternalLink className="h-4 w-4 text-gray-400" />
                         </div>
                       </div>
@@ -806,6 +926,50 @@ export default function DashboardPage() {
           </Card>
         )}
       </main>
+
+      {/* Cancellation Confirmation Dialog */}
+      <Dialog open={!!jobToCancel} onOpenChange={(open) => !open && setJobToCancel(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel Extraction Job?</DialogTitle>
+            <DialogDescription>
+              This will stop the extraction job and <strong>delete all transactions</strong> that have been created during this run.
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {jobToCancel && (
+            <div className="py-4 space-y-2">
+              <div className="text-sm">
+                <span className="text-gray-600">Job ID:</span>{" "}
+                <span className="font-mono text-xs">{jobToCancel.id}</span>
+              </div>
+              <div className="text-sm">
+                <span className="text-gray-600">Progress:</span>{" "}
+                <span>{jobToCancel.processedItems} / {jobToCancel.totalItems} items processed</span>
+              </div>
+              <div className="text-sm text-amber-600 mt-4">
+                ⚠️ All transactions created so far will be permanently deleted
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setJobToCancel(null)}
+              disabled={isCancelling}
+            >
+              Keep Running
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleCancelJob}
+              disabled={isCancelling}
+            >
+              {isCancelling ? "Cancelling..." : "Cancel Job"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

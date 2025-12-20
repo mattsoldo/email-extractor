@@ -282,6 +282,39 @@ export const extractionRuns = pgTable("extraction_runs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Email Extractions - tracks each extraction attempt for each email
+// This allows us to track multiple extraction runs on the same email and compare results
+export const emailExtractions = pgTable("email_extractions", {
+  id: text("id").primaryKey(),
+  emailId: text("email_id").references(() => emails.id).notNull(),
+  runId: text("run_id").references(() => extractionRuns.id).notNull(),
+
+  // Extraction result
+  status: extractionStatusEnum("status").notNull(), // completed, failed, skipped, informational
+
+  // Raw AI response (full extraction data including all transactions)
+  rawExtraction: jsonb("raw_extraction").$type<{
+    isTransactional: boolean;
+    emailType: string;
+    transactions: Array<Record<string, unknown>>;
+    extractionNotes?: string;
+    skipReason?: string;
+    informationalNotes?: string;
+  }>(),
+
+  // Metrics
+  confidence: decimal("confidence", { precision: 3, scale: 2 }), // Overall confidence
+  processingTimeMs: integer("processing_time_ms"), // Processing duration
+
+  // Transaction IDs created from this extraction (for easy lookup)
+  transactionIds: jsonb("transaction_ids").$type<string[]>().default([]),
+
+  // Error details if failed
+  error: text("error"),
+
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // Relations
 export const accountCorpusRelations = relations(accountCorpus, ({ many }) => ({
   accounts: many(accounts),
@@ -340,9 +373,21 @@ export const emailsRelations = relations(emails, ({ one, many }) => ({
     references: [emailSets.id],
   }),
   transactions: many(transactions),
+  extractions: many(emailExtractions),
   winnerTransaction: one(transactions, {
     fields: [emails.winnerTransactionId],
     references: [transactions.id],
+  }),
+}));
+
+export const emailExtractionsRelations = relations(emailExtractions, ({ one }) => ({
+  email: one(emails, {
+    fields: [emailExtractions.emailId],
+    references: [emails.id],
+  }),
+  run: one(extractionRuns, {
+    fields: [emailExtractions.runId],
+    references: [extractionRuns.id],
   }),
 }));
 
@@ -362,6 +407,8 @@ export type ExtractionLog = typeof extractionLogs.$inferSelect;
 export type NewExtractionLog = typeof extractionLogs.$inferInsert;
 export type ExtractionRun = typeof extractionRuns.$inferSelect;
 export type NewExtractionRun = typeof extractionRuns.$inferInsert;
+export type EmailExtraction = typeof emailExtractions.$inferSelect;
+export type NewEmailExtraction = typeof emailExtractions.$inferInsert;
 export type EmailSet = typeof emailSets.$inferSelect;
 export type NewEmailSet = typeof emailSets.$inferInsert;
 export type AiModel = typeof aiModels.$inferSelect;

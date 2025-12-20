@@ -94,7 +94,7 @@ export async function GET(
   return NextResponse.json(response);
 }
 
-// DELETE /api/jobs/[id] - Cancel a job with optional notes
+// DELETE /api/jobs/[id] - Cancel a job and clean up all created transactions
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -110,10 +110,40 @@ export async function DELETE(
     // No body or invalid JSON - that's fine
   }
 
+  // First, find the extraction run for this job (if it exists)
+  const runResult = await db
+    .select()
+    .from(extractionRuns)
+    .where(eq(extractionRuns.jobId, id))
+    .limit(1);
+
+  const extractionRun = runResult[0] || null;
+
+  // Cancel the in-memory job
   const cancelled = cancelJob(id);
 
-  if (cancelled) {
-    // Update database with cancel notes
+  if (cancelled || extractionRun) {
+    // If there's an extraction run, clean up transactions and update status
+    if (extractionRun) {
+      // Delete all transactions created during this run
+      const deletedTransactions = await db
+        .delete(transactions)
+        .where(eq(transactions.extractionRunId, extractionRun.id))
+        .returning({ id: transactions.id });
+
+      console.log(`[Cancel Job] Deleted ${deletedTransactions.length} transactions for run ${extractionRun.id}`);
+
+      // Update extraction run status to cancelled
+      await db
+        .update(extractionRuns)
+        .set({
+          status: "cancelled",
+          completedAt: new Date(),
+        })
+        .where(eq(extractionRuns.id, extractionRun.id));
+    }
+
+    // Update job database record with cancel notes
     await db
       .update(jobs)
       .set({
@@ -122,7 +152,11 @@ export async function DELETE(
       })
       .where(eq(jobs.id, id));
 
-    return NextResponse.json({ message: "Job cancelled", notes });
+    return NextResponse.json({
+      message: "Job cancelled",
+      notes,
+      transactionsDeleted: extractionRun ? true : false,
+    });
   }
 
   return NextResponse.json(

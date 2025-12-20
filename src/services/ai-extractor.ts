@@ -209,37 +209,9 @@ async function getModelInstance(modelId: string) {
   throw error;
 }
 
-// Default extraction instructions
-export const DEFAULT_EXTRACTION_INSTRUCTIONS = `INSTRUCTIONS:
-1. Determine if this email contains any financial transactions
-2. Extract ALL transactions found - an email may contain multiple transactions
-3. For each transaction, extract all relevant financial data with high precision
-4. For account numbers, preserve the exact format shown (including masked portions like XXXX-1802)
-5. For dates, convert to ISO format (YYYY-MM-DD)
-6. For amounts, extract the numeric value in dollars
-7. Pay attention to both the "from" and "to" accounts for transfers
-8. For options, extract the full contract details including strike, expiration, and action type
-9. Note any fields you found that don't fit the standard schema in additionalFields
-10. Set confidence based on how clear and complete the information is
-
-COMMON PATTERNS TO RECOGNIZE:
-- "Dividend or Interest Paid" emails contain dividend/interest payments
-- "Executed @ $X.XX" indicates trade execution with price
-- "Wire Transfer Complete" contains wire details with fees
-- "Funds Transfer Confirmation" contains internal transfer details
-- "Restricted Stock released/vesting" contains RSU information
-- Account formats: "XXXX-1234", "Account: XXXX1234", "AccountName-1234"
-
-EMAIL TYPES:
-- "transactional": Contains one or more financial transactions
-- "informational": Account alerts, balance notifications, security alerts (no actual transaction)
-- "marketing": Promotional content, newsletters
-- "alert": Price alerts, news alerts, notifications
-- "statement": Account statements, tax documents
-- "other": Other email types`;
-
 /**
  * Extract transaction data from a parsed email using the specified model
+ * Note: customInstructions must be provided from the prompts database
  */
 export async function extractTransaction(
   email: ParsedEmail,
@@ -254,7 +226,11 @@ export async function extractTransaction(
 
     const model = await getModelInstance(modelId);
 
-    const instructions = customInstructions || DEFAULT_EXTRACTION_INSTRUCTIONS;
+    if (!customInstructions) {
+      throw new Error("customInstructions is required. Extraction prompts must be fetched from the database.");
+    }
+
+    const instructions = customInstructions;
 
     const { object } = await generateObject({
       model,

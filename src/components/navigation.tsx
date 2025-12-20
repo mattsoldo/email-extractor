@@ -15,6 +15,7 @@ import {
   FolderOpen,
   Scale,
   Cpu,
+  FileText,
   ChevronLeft,
   ChevronRight,
   Menu,
@@ -32,6 +33,7 @@ const navItems = [
   { href: "/accounts", label: "Accounts", icon: Wallet },
   { href: "/corpus", label: "Account Groups", icon: Link2 },
   { href: "/models", label: "Models", icon: Cpu },
+  { href: "/prompts", label: "Prompts", icon: FileText },
   { href: "/chat", label: "Chat", icon: MessageSquare },
 ];
 

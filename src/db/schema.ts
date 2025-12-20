@@ -243,6 +243,18 @@ export const jobs = pgTable("jobs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Prompts - reusable extraction prompts
+export const prompts = pgTable("prompts", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(), // User-friendly name (e.g., "Default Financial Extraction")
+  description: text("description"), // What this prompt is for
+  content: text("content").notNull(), // The actual prompt text
+  isDefault: boolean("is_default").default(false), // Is this the default prompt?
+  isActive: boolean("is_active").default(true), // Can this prompt be used?
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // Extraction runs - immutable snapshots of extraction results
 export const extractionRuns = pgTable("extraction_runs", {
   id: text("id").primaryKey(),
@@ -252,9 +264,8 @@ export const extractionRuns = pgTable("extraction_runs", {
   name: text("name"), // Optional user-friendly name
   description: text("description"), // Notes about this run
   modelId: text("model_id").notNull(), // Which AI model was used
+  promptId: text("prompt_id").references(() => prompts.id).notNull(), // Which prompt was used
   softwareVersion: text("software_version").notNull(), // Which version of our software was used
-  instructions: text("instructions"), // Custom extraction instructions (null = default)
-  instructionsHash: text("instructions_hash"), // Hash of instructions for duplicate detection
   emailsProcessed: integer("emails_processed").default(0),
   transactionsCreated: integer("transactions_created").default(0),
   informationalCount: integer("informational_count").default(0),
@@ -355,3 +366,5 @@ export type EmailSet = typeof emailSets.$inferSelect;
 export type NewEmailSet = typeof emailSets.$inferInsert;
 export type AiModel = typeof aiModels.$inferSelect;
 export type NewAiModel = typeof aiModels.$inferInsert;
+export type Prompt = typeof prompts.$inferSelect;
+export type NewPrompt = typeof prompts.$inferInsert;

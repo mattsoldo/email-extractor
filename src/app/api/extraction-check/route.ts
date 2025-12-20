@@ -6,10 +6,10 @@ import { emails } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 
 /**
- * GET /api/extraction-check - Check if extraction can be run for a set+model combo
+ * GET /api/extraction-check - Check if extraction can be run for a set+model+prompt combo
  *
  * This checks if:
- * 1. The set+model+software version combination has already been extracted
+ * 1. The set+model+prompt+software version combination has already been extracted
  * 2. The set has emails that can be processed
  *
  * Returns eligibility status and reason if not eligible
@@ -18,6 +18,7 @@ export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const setId = searchParams.get("setId");
   const modelId = searchParams.get("modelId");
+  const promptId = searchParams.get("promptId");
 
   if (!setId) {
     return NextResponse.json(
@@ -33,15 +34,22 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  if (!promptId) {
+    return NextResponse.json(
+      { error: "promptId parameter is required" },
+      { status: 400 }
+    );
+  }
+
   try {
-    // Check if extraction already exists for this set+model+version
-    const { exists, run } = await checkExistingExtraction(setId, modelId);
+    // Check if extraction already exists for this set+model+prompt+version
+    const { exists, run } = await checkExistingExtraction(setId, modelId, promptId);
 
     if (exists && run) {
       return NextResponse.json({
         eligible: false,
         reason: "already_extracted",
-        message: `This set has already been extracted with ${modelId} using software version ${SOFTWARE_VERSION}`,
+        message: `This set has already been extracted with this model and prompt using software version ${SOFTWARE_VERSION}`,
         existingRun: {
           id: run.id,
           completedAt: run.completedAt,

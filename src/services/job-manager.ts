@@ -1,21 +1,12 @@
 import { v4 as uuid } from "uuid";
-import { createHash } from "crypto";
 import { db } from "@/db";
-import { jobs, emails, transactions, accounts, extractionLogs, extractionRuns } from "@/db/schema";
+import { jobs, emails, transactions, accounts, extractionLogs, extractionRuns, prompts } from "@/db/schema";
 import { eq, and, inArray, desc, sql } from "drizzle-orm";
 import { scanEmailDirectory, parseEmlFile, toDbEmail, classifyEmail } from "./email-parser";
-import { extractTransaction, type TransactionExtraction, type SingleTransaction, DEFAULT_MODEL_ID, DEFAULT_EXTRACTION_INSTRUCTIONS } from "./ai-extractor";
+import { extractTransaction, type TransactionExtraction, type SingleTransaction, DEFAULT_MODEL_ID } from "./ai-extractor";
 import { normalizeTransaction, detectOrCreateAccount } from "./transaction-normalizer";
 import { estimateBatchCost, formatCost, getModelConfig } from "./model-config";
 import { SOFTWARE_VERSION } from "@/config/version";
-
-/**
- * Hash instructions for duplicate detection
- */
-function hashInstructions(instructions: string | null): string {
-  const content = instructions || DEFAULT_EXTRACTION_INSTRUCTIONS;
-  return createHash("sha256").update(content).digest("hex").substring(0, 16);
-}
 
 export type JobType = "email_scan" | "extraction" | "reprocess";
 export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -268,15 +259,13 @@ async function runEmailScanJob(
 }
 
 /**
- * Check if an extraction already exists for this set+model+version+instructions combination
+ * Check if an extraction already exists for this set+model+version+prompt combination
  */
 export async function checkExistingExtraction(
   setId: string,
   modelId: string,
-  instructions?: string | null
+  promptId: string
 ): Promise<{ exists: boolean; run?: typeof extractionRuns.$inferSelect }> {
-  const instructionsHash = hashInstructions(instructions || null);
-
   const existing = await db
     .select()
     .from(extractionRuns)
@@ -285,7 +274,7 @@ export async function checkExistingExtraction(
         eq(extractionRuns.setId, setId),
         eq(extractionRuns.modelId, modelId),
         eq(extractionRuns.softwareVersion, SOFTWARE_VERSION),
-        eq(extractionRuns.instructionsHash, instructionsHash),
+        eq(extractionRuns.promptId, promptId),
         eq(extractionRuns.status, "completed")
       )
     )
@@ -306,8 +295,8 @@ export async function startExtractionJob(
   options: {
     setId: string; // Required - which set to extract
     modelId?: string; // AI model to use (defaults to DEFAULT_MODEL_ID)
+    promptId: string; // Required - which prompt to use
     concurrency?: number;
-    instructions?: string; // Custom extraction instructions (optional)
     runName?: string; // Optional name for this run
     runDescription?: string; // Optional description for this run
   }
@@ -315,15 +304,32 @@ export async function startExtractionJob(
   if (!options.setId) {
     throw new Error("setId is required for extraction");
   }
+  if (!options.promptId) {
+    throw new Error("promptId is required for extraction");
+  }
 
   const modelId = options.modelId || DEFAULT_MODEL_ID;
 
-  // Check if this combination already exists (same set, model, version, AND instructions)
-  const { exists, run } = await checkExistingExtraction(options.setId, modelId, options.instructions);
+  // Fetch the prompt from database
+  const promptResult = await db
+    .select()
+    .from(prompts)
+    .where(eq(prompts.id, options.promptId))
+    .limit(1);
+
+  if (promptResult.length === 0) {
+    throw new Error(`Prompt not found: ${options.promptId}`);
+  }
+
+  const prompt = promptResult[0];
+  console.log(`[Job Manager] Using prompt: ${prompt.name} (${prompt.id})`);
+
+  // Check if this combination already exists (same set, model, version, AND prompt)
+  const { exists, run } = await checkExistingExtraction(options.setId, modelId, options.promptId);
   if (exists) {
     throw new Error(
-      `Extraction already exists for this set with ${modelId}, software v${SOFTWARE_VERSION}, and these instructions. ` +
-      `Run ID: ${run?.id}. Use different instructions or change the model to create a new run.`
+      `Extraction already exists for this set with ${modelId}, software v${SOFTWARE_VERSION}, and prompt "${prompt.name}". ` +
+      `Run ID: ${run?.id}. Use a different prompt or model to create a new run.`
     );
   }
 
@@ -353,7 +359,7 @@ export async function startExtractionJob(
     metadata: { ...options, softwareVersion: SOFTWARE_VERSION },
   });
 
-  runExtractionJob(jobId, options, abortController.signal);
+  runExtractionJob(jobId, { ...options, promptContent: prompt.content }, abortController.signal);
 
   return jobId;
 }
@@ -370,8 +376,9 @@ async function runExtractionJob(
   options: {
     setId: string;
     modelId?: string;
+    promptId: string;
+    promptContent: string; // The actual prompt text
     concurrency?: number;
-    instructions?: string;
     runName?: string;
     runDescription?: string;
   },
@@ -384,7 +391,7 @@ async function runExtractionJob(
 
   const modelId = options.modelId || DEFAULT_MODEL_ID;
   const setId = options.setId;
-  const customInstructions = options.instructions || null;
+  const promptContent = options.promptContent;
 
   await db
     .update(jobs)
@@ -410,9 +417,8 @@ async function runExtractionJob(
     name: options.runName || null,
     description: options.runDescription || null,
     modelId,
+    promptId: options.promptId,
     softwareVersion: SOFTWARE_VERSION,
-    instructions: customInstructions,
-    instructionsHash: hashInstructions(customInstructions),
     config: options,
     status: "running",
     startedAt: new Date(),
@@ -483,7 +489,7 @@ async function runExtractionJob(
             headers: (email.headers as Record<string, string>) || {},
           };
 
-          const extraction = await extractTransaction(parsedEmail, modelId, customInstructions || undefined);
+          const extraction = await extractTransaction(parsedEmail, modelId, promptContent);
 
           return { email, extraction };
         })

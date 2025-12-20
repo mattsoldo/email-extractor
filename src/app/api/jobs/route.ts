@@ -43,9 +43,16 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+      if (!options?.promptId) {
+        return NextResponse.json(
+          { error: "promptId is required for extraction" },
+          { status: 400 }
+        );
+      }
       jobId = await startExtractionJob({
         setId: options.setId,
         modelId: options?.modelId,
+        promptId: options.promptId,
         concurrency: options?.concurrency || 3,
       });
       break;

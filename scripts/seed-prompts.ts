@@ -6,7 +6,7 @@
 import { config } from "dotenv";
 config({ path: ".env.local" });
 
-import { db } from "../src/db";
+import { db, sql } from "../src/db";
 import { prompts } from "../src/db/schema";
 import { v4 as uuid } from "uuid";
 
@@ -70,11 +70,18 @@ async function main() {
     console.log("\n=== Seed Complete ===");
   } catch (error) {
     console.error("Failed to seed prompts:", error);
+    await sql.end();
     process.exit(1);
   }
 }
 
-main().catch((error) => {
-  console.error("Seed script error:", error);
-  process.exit(1);
-});
+main()
+  .then(async () => {
+    await sql.end();
+    process.exit(0);
+  })
+  .catch(async (error) => {
+    console.error("Seed script error:", error);
+    await sql.end();
+    process.exit(1);
+  });

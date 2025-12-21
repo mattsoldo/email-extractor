@@ -172,10 +172,12 @@ async function resetDatabase() {
 }
 
 resetDatabase()
-  .then(() => {
+  .then(async () => {
+    await sql.end();
     process.exit(0);
   })
-  .catch((error) => {
+  .catch(async (error) => {
     console.error("\n❌ Reset failed:", error);
+    await sql.end();
     process.exit(1);
   });

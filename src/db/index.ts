@@ -15,5 +15,8 @@ const queryClient = postgres(connectionString, {
 // Create drizzle database instance
 export const db = drizzle(queryClient, { schema });
 
+// Export query client for connection management (closing, etc.)
+export const sql = queryClient;
+
 // Export schema for convenience
 export * from "./schema";

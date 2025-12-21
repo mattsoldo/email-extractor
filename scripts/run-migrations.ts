@@ -23,8 +23,17 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
+// Detect if we need SSL (production/hosted databases)
+const needsSSL =
+  process.env.NODE_ENV === "production" ||
+  process.env.VERCEL === "1" ||
+  DATABASE_URL.includes("neon.tech") ||
+  DATABASE_URL.includes("vercel-storage") ||
+  DATABASE_URL.includes("supabase.co") ||
+  DATABASE_URL.includes("amazonaws.com");
+
 const sql = postgres(DATABASE_URL, {
-  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
+  ssl: needsSSL ? { rejectUnauthorized: false } : false,
 });
 
 async function ensureMigrationsTable() {

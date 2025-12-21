@@ -42,13 +42,22 @@ if (!confirmed) {
 }
 
 // Additional safety - prevent running on production
-if (process.env.NODE_ENV === "production" || DATABASE_URL.includes("prod")) {
+if (
+  process.env.NODE_ENV === "production" ||
+  process.env.VERCEL === "1" ||
+  DATABASE_URL.includes("prod") ||
+  DATABASE_URL.includes("neon.tech") ||
+  DATABASE_URL.includes("vercel-storage") ||
+  DATABASE_URL.includes("supabase.co")
+) {
   console.error("\n❌ Cannot run reset on production database!\n");
+  console.error("This script is for local development only.");
+  console.error("Database URL suggests this is a production/hosted database.\n");
   process.exit(1);
 }
 
 const sql = postgres(DATABASE_URL, {
-  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
+  ssl: false, // Local development only, no SSL needed
 });
 
 async function dropAllTables() {

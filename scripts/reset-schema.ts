@@ -33,6 +33,7 @@ if (!DATABASE_URL) {
 // Safety check - require explicit confirmation
 const args = process.argv.slice(2);
 const confirmed = args.includes("--confirm");
+const forceProduction = args.includes("--force-production");
 
 if (!confirmed) {
   console.error("\n⚠️  DANGER: This will DROP ALL DATA in the database!\n");
@@ -41,23 +42,41 @@ if (!confirmed) {
   process.exit(1);
 }
 
-// Additional safety - prevent running on production
-if (
+// Additional safety - prevent running on production (unless --force-production)
+const isProductionDatabase =
   process.env.NODE_ENV === "production" ||
   process.env.VERCEL === "1" ||
   DATABASE_URL.includes("prod") ||
   DATABASE_URL.includes("neon.tech") ||
   DATABASE_URL.includes("vercel-storage") ||
-  DATABASE_URL.includes("supabase.co")
-) {
+  DATABASE_URL.includes("supabase.co");
+
+if (isProductionDatabase && !forceProduction) {
   console.error("\n❌ Cannot run reset on production database!\n");
   console.error("This script is for local development only.");
   console.error("Database URL suggests this is a production/hosted database.\n");
+  console.error("\n⚠️  To FORCE reset on production (⚠️  DESTROYS ALL DATA ⚠️):");
+  console.error("  npm run db:reset-schema -- --confirm --force-production\n");
   process.exit(1);
 }
 
+if (forceProduction) {
+  console.error("\n" + "=".repeat(60));
+  console.error("  ⚠️  FORCING PRODUCTION DATABASE RESET ⚠️");
+  console.error("  ALL DATA WILL BE PERMANENTLY DELETED");
+  console.error("=".repeat(60) + "\n");
+  console.error("Database: " + DATABASE_URL.replace(/:[^:@]+@/, ":****@") + "\n");
+  console.error("Waiting 5 seconds... Press Ctrl+C to cancel\n");
+
+  // Give user time to cancel
+  await new Promise(resolve => setTimeout(resolve, 5000));
+}
+
+// Configure SSL based on database type
+const needsSSL = isProductionDatabase;
+
 const sql = postgres(DATABASE_URL, {
-  ssl: false, // Local development only, no SSL needed
+  ssl: needsSSL ? { rejectUnauthorized: false } : false,
 });
 
 async function dropAllTables() {

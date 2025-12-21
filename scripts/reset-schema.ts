@@ -60,18 +60,6 @@ if (isProductionDatabase && !forceProduction) {
   process.exit(1);
 }
 
-if (forceProduction) {
-  console.error("\n" + "=".repeat(60));
-  console.error("  ⚠️  FORCING PRODUCTION DATABASE RESET ⚠️");
-  console.error("  ALL DATA WILL BE PERMANENTLY DELETED");
-  console.error("=".repeat(60) + "\n");
-  console.error("Database: " + DATABASE_URL.replace(/:[^:@]+@/, ":****@") + "\n");
-  console.error("Waiting 5 seconds... Press Ctrl+C to cancel\n");
-
-  // Give user time to cancel
-  await new Promise(resolve => setTimeout(resolve, 5000));
-}
-
 // Configure SSL based on database type
 const needsSSL = isProductionDatabase;
 
@@ -157,6 +145,19 @@ async function seedEssentialData() {
 }
 
 async function resetDatabase() {
+  // Show extra warning for production databases
+  if (forceProduction) {
+    console.log("\n" + "=".repeat(60));
+    console.log("  ⚠️  FORCING PRODUCTION DATABASE RESET ⚠️");
+    console.log("  ALL DATA WILL BE PERMANENTLY DELETED");
+    console.log("=".repeat(60) + "\n");
+    console.log("Database: " + DATABASE_URL.replace(/:[^:@]+@/, ":****@") + "\n");
+    console.log("Waiting 5 seconds... Press Ctrl+C to cancel\n");
+
+    // Give user time to cancel
+    await new Promise(resolve => setTimeout(resolve, 5000));
+  }
+
   console.log("\n" + "=".repeat(60));
   console.log("  DATABASE RESET - ALL DATA WILL BE LOST");
   console.log("=".repeat(60) + "\n");

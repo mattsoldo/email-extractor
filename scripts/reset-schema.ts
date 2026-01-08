@@ -30,6 +30,9 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
+// TypeScript narrowing doesn't work across function boundaries, so we assert here
+const DB_URL: string = DATABASE_URL;
+
 // Safety check - require explicit confirmation
 const args = process.argv.slice(2);
 const confirmed = args.includes("--confirm");
@@ -46,10 +49,10 @@ if (!confirmed) {
 const isProductionDatabase =
   process.env.NODE_ENV === "production" ||
   process.env.VERCEL === "1" ||
-  DATABASE_URL.includes("prod") ||
-  DATABASE_URL.includes("neon.tech") ||
-  DATABASE_URL.includes("vercel-storage") ||
-  DATABASE_URL.includes("supabase.co");
+  DB_URL.includes("prod") ||
+  DB_URL.includes("neon.tech") ||
+  DB_URL.includes("vercel-storage") ||
+  DB_URL.includes("supabase.co");
 
 if (isProductionDatabase && !forceProduction) {
   console.error("\n❌ Cannot run reset on production database!\n");
@@ -63,7 +66,7 @@ if (isProductionDatabase && !forceProduction) {
 // Configure SSL based on database type
 const needsSSL = isProductionDatabase;
 
-const sql = postgres(DATABASE_URL, {
+const sql = postgres(DB_URL, {
   ssl: needsSSL ? { rejectUnauthorized: false } : false,
 });
 
@@ -112,7 +115,7 @@ async function recreateSchema() {
     // Use drizzle-kit push to recreate the schema
     execSync("npx drizzle-kit push", {
       stdio: "inherit",
-      env: { ...process.env, DATABASE_URL },
+      env: { ...process.env, DATABASE_URL: DB_URL },
     });
 
     console.log("\n✅ Schema recreated successfully\n");
@@ -130,7 +133,7 @@ async function seedEssentialData() {
     try {
       execSync("tsx scripts/seed-prompts.ts", {
         stdio: "inherit",
-        env: { ...process.env, DATABASE_URL },
+        env: { ...process.env, DATABASE_URL: DB_URL },
       });
       console.log("  ✓ Seeded prompts\n");
     } catch (e) {
@@ -151,7 +154,7 @@ async function resetDatabase() {
     console.log("  ⚠️  FORCING PRODUCTION DATABASE RESET ⚠️");
     console.log("  ALL DATA WILL BE PERMANENTLY DELETED");
     console.log("=".repeat(60) + "\n");
-    console.log("Database: " + DATABASE_URL.replace(/:[^:@]+@/, ":****@") + "\n");
+    console.log("Database: " + DB_URL.replace(/:[^:@]+@/, ":****@") + "\n");
     console.log("Waiting 5 seconds... Press Ctrl+C to cancel\n");
 
     // Give user time to cancel

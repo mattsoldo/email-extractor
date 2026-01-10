@@ -101,6 +101,7 @@ export async function POST(request: NextRequest) {
         promptId: options.promptId,
         customPromptContent: options?.customPromptContent, // Optional: overrides prompt content if provided
         concurrency: options?.concurrency || 3,
+        sampleSize: options?.sampleSize, // Optional: randomly select this many emails
       });
       break;
 

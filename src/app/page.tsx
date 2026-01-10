@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -38,6 +39,7 @@ import {
   ExternalLink,
   Pause,
   Play,
+  Shuffle,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -157,6 +159,9 @@ export default function DashboardPage() {
   // Cancellation state
   const [jobToCancel, setJobToCancel] = useState<JobProgress | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
+
+  // Sample size state for small extraction runs
+  const [sampleSize, setSampleSize] = useState<string>("");
 
   const fetchStats = useCallback(async () => {
     try {
@@ -337,6 +342,7 @@ export default function DashboardPage() {
     }
 
     try {
+      const parsedSampleSize = sampleSize ? parseInt(sampleSize) : undefined;
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -347,6 +353,7 @@ export default function DashboardPage() {
             modelId: selectedModelId,
             promptId: selectedPromptId,
             concurrency: 3,
+            sampleSize: parsedSampleSize && parsedSampleSize > 0 ? parsedSampleSize : undefined,
           },
         }),
       });
@@ -360,7 +367,11 @@ export default function DashboardPage() {
       const model = models.find((m) => m.id === selectedModelId);
       const set = emailSets.find((s) => s.id === selectedSetId);
       const prompt = prompts.find((p) => p.id === selectedPromptId);
-      toast.success(`Extraction started for "${set?.name}" with ${model?.name || selectedModelId} using "${prompt?.name || 'prompt'}"`);
+      const sampleInfo = parsedSampleSize && parsedSampleSize > 0
+        ? ` (random sample of ${parsedSampleSize})`
+        : "";
+      toast.success(`Extraction started for "${set?.name}"${sampleInfo} with ${model?.name || selectedModelId} using "${prompt?.name || 'prompt'}"`);
+      setSampleSize(""); // Clear sample size after starting
       fetchActiveJobs();
       // Re-check eligibility after starting
       checkEligibility(selectedSetId, selectedModelId, selectedPromptId);
@@ -636,6 +647,32 @@ export default function DashboardPage() {
                   </p>
                 )}
               </div>
+
+              {/* Sample Size (optional) */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700 flex items-center gap-1">
+                  <Shuffle className="h-4 w-4" />
+                  Sample Size
+                  <span className="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <Input
+                  type="number"
+                  placeholder={selectedSetId
+                    ? `All ${emailSets.find(s => s.id === selectedSetId)?.emailCount || 0} emails`
+                    : "Leave empty for all"
+                  }
+                  value={sampleSize}
+                  onChange={(e) => setSampleSize(e.target.value)}
+                  min={1}
+                  max={selectedSetId ? emailSets.find(s => s.id === selectedSetId)?.emailCount : undefined}
+                />
+                <p className="text-xs text-gray-500">
+                  {sampleSize && parseInt(sampleSize) > 0
+                    ? `Randomly select ${sampleSize} emails from the set`
+                    : "Process all emails in the set"
+                  }
+                </p>
+              </div>
             </div>
 
             {/* Status and Actions Row */}
@@ -654,7 +691,12 @@ export default function DashboardPage() {
                 <RefreshCw className="h-4 w-4" />
                 Extract Transactions
                 {eligibility?.eligible && eligibility.emailCount && (
-                  <Badge variant="secondary">{eligibility.emailCount} emails</Badge>
+                  <Badge variant="secondary">
+                    {sampleSize && parseInt(sampleSize) > 0
+                      ? `${sampleSize} of ${eligibility.emailCount}`
+                      : `${eligibility.emailCount} emails`
+                    }
+                  </Badge>
                 )}
               </Button>
 

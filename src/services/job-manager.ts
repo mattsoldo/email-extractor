@@ -357,6 +357,7 @@ export async function startExtractionJob(
     concurrency?: number;
     runName?: string; // Optional name for this run
     runDescription?: string; // Optional description for this run
+    sampleSize?: number; // Optional - randomly select this many emails from the set
   }
 ): Promise<string> {
   if (!options.setId) {
@@ -431,7 +432,7 @@ export async function startExtractionJob(
   });
 
   // Only pass custom schema if defined, otherwise use default Zod schema in extractTransaction
-  runExtractionJob(jobId, { ...options, promptContent: promptContentToUse, jsonSchema: hasCustomSchema ? prompt.jsonSchema : null }, abortController.signal);
+  runExtractionJob(jobId, { ...options, promptContent: promptContentToUse, jsonSchema: hasCustomSchema ? prompt.jsonSchema : null, sampleSize: options.sampleSize }, abortController.signal);
 
   return jobId;
 }
@@ -462,6 +463,7 @@ async function runExtractionJob(
     concurrency?: number;
     runName?: string;
     runDescription?: string;
+    sampleSize?: number; // Optional - randomly select this many emails from the set
   },
   signal: AbortSignal
 ): Promise<void> {
@@ -539,11 +541,24 @@ async function runExtractionJob(
   }> = [];
 
   try {
-    // Get ALL emails from the set (not just pending)
-    const emailsToProcess = await db
+    // Get emails from the set - optionally sample randomly
+    let emailsToProcess = await db
       .select()
       .from(emails)
       .where(eq(emails.setId, setId));
+
+    // Apply random sampling if sampleSize is specified
+    const totalInSet = emailsToProcess.length;
+    if (options.sampleSize && options.sampleSize > 0 && options.sampleSize < totalInSet) {
+      // Fisher-Yates shuffle and take first N
+      const shuffled = [...emailsToProcess];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      emailsToProcess = shuffled.slice(0, options.sampleSize);
+      console.log(`[Job Manager] Randomly sampled ${emailsToProcess.length} emails from ${totalInSet} total in set`);
+    }
 
     job.progress.totalItems = emailsToProcess.length;
 

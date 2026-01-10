@@ -5,15 +5,6 @@ import { Navigation } from "@/components/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import {
   Plus,
@@ -23,13 +14,16 @@ import {
   FileText,
   Loader2,
   Check,
+  Code,
 } from "lucide-react";
+import Link from "next/link";
 
 interface Prompt {
   id: string;
   name: string;
   description: string | null;
   content: string;
+  jsonSchema: Record<string, unknown> | null;
   isDefault: boolean;
   isActive: boolean;
   createdAt: string;
@@ -38,24 +32,13 @@ interface Prompt {
 
 export default function PromptsPage() {
   const [prompts, setPrompts] = useState<Prompt[]>([]);
-  const [defaultPromptId, setDefaultPromptId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showDialog, setShowDialog] = useState(false);
-  const [editingPrompt, setEditingPrompt] = useState<Prompt | null>(null);
-  const [formData, setFormData] = useState({
-    name: "",
-    description: "",
-    content: "",
-    isDefault: false,
-  });
-  const [saving, setSaving] = useState(false);
 
   const fetchPrompts = useCallback(async () => {
     try {
       const res = await fetch("/api/prompts");
       const data = await res.json();
       setPrompts(data.prompts || []);
-      setDefaultPromptId(data.defaultPromptId);
     } catch (error) {
       console.error("Failed to fetch prompts:", error);
       toast.error("Failed to load prompts");
@@ -67,62 +50,6 @@ export default function PromptsPage() {
   useEffect(() => {
     fetchPrompts();
   }, [fetchPrompts]);
-
-  const openCreateDialog = () => {
-    setEditingPrompt(null);
-    setFormData({
-      name: "",
-      description: "",
-      content: "",
-      isDefault: false,
-    });
-    setShowDialog(true);
-  };
-
-  const openEditDialog = (prompt: Prompt) => {
-    setEditingPrompt(prompt);
-    setFormData({
-      name: prompt.name,
-      description: prompt.description || "",
-      content: prompt.content,
-      isDefault: prompt.isDefault,
-    });
-    setShowDialog(true);
-  };
-
-  const handleSave = async () => {
-    if (!formData.name.trim() || !formData.content.trim()) {
-      toast.error("Name and content are required");
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const url = editingPrompt
-        ? `/api/prompts/${editingPrompt.id}`
-        : "/api/prompts";
-      const method = editingPrompt ? "PUT" : "POST";
-
-      const res = await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
-      });
-
-      if (res.ok) {
-        toast.success(editingPrompt ? "Prompt updated" : "Prompt created");
-        setShowDialog(false);
-        fetchPrompts();
-      } else {
-        const data = await res.json();
-        toast.error(data.error || "Failed to save prompt");
-      }
-    } catch (error) {
-      toast.error("Failed to save prompt");
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const handleDelete = async (prompt: Prompt) => {
     if (prompt.isDefault) {
@@ -160,6 +87,7 @@ export default function PromptsPage() {
           name: prompt.name,
           description: prompt.description,
           content: prompt.content,
+          jsonSchema: prompt.jsonSchema,
           isDefault: true,
           isActive: true,
         }),
@@ -206,10 +134,12 @@ export default function PromptsPage() {
               Manage prompts used for extracting financial data from emails
             </p>
           </div>
-          <Button onClick={openCreateDialog} className="gap-2">
-            <Plus className="h-4 w-4" />
-            New Prompt
-          </Button>
+          <Link href="/prompts/new">
+            <Button className="gap-2">
+              <Plus className="h-4 w-4" />
+              New Prompt
+            </Button>
+          </Link>
         </div>
 
         {/* Prompts Grid */}
@@ -221,10 +151,12 @@ export default function PromptsPage() {
               <p className="text-gray-500 mb-4">
                 Create your first prompt to customize extraction behavior
               </p>
-              <Button onClick={openCreateDialog} className="gap-2">
-                <Plus className="h-4 w-4" />
-                Create Prompt
-              </Button>
+              <Link href="/prompts/new">
+                <Button className="gap-2">
+                  <Plus className="h-4 w-4" />
+                  Create Prompt
+                </Button>
+              </Link>
             </CardContent>
           </Card>
         ) : (
@@ -263,16 +195,32 @@ export default function PromptsPage() {
                     </div>
                   </div>
 
+                  {/* JSON Schema indicator */}
+                  <div className="mb-4 flex items-center gap-2">
+                    <Code className="h-4 w-4 text-gray-500" />
+                    <span className="text-xs text-gray-500">
+                      JSON Schema:{" "}
+                      {prompt.jsonSchema ? (
+                        <Badge variant="outline" className="text-xs text-green-600 border-green-300">
+                          Custom
+                        </Badge>
+                      ) : (
+                        <span className="text-gray-400">Default</span>
+                      )}
+                    </span>
+                  </div>
+
                   <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => openEditDialog(prompt)}
-                      className="gap-1"
-                    >
-                      <Edit className="h-3 w-3" />
-                      Edit
-                    </Button>
+                    <Link href={`/prompts/${prompt.id}`}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1"
+                      >
+                        <Edit className="h-3 w-3" />
+                        Edit
+                      </Button>
+                    </Link>
                     {!prompt.isDefault && (
                       <>
                         <Button
@@ -306,91 +254,6 @@ export default function PromptsPage() {
           </div>
         )}
       </main>
-
-      {/* Create/Edit Dialog */}
-      <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>
-              {editingPrompt ? "Edit Prompt" : "Create New Prompt"}
-            </DialogTitle>
-            <DialogDescription>
-              {editingPrompt
-                ? "Update the prompt configuration"
-                : "Create a new prompt for extraction runs"}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div>
-              <Label htmlFor="name">Name *</Label>
-              <input
-                id="name"
-                type="text"
-                className="mt-2 w-full px-3 py-2 border rounded-md text-sm"
-                placeholder="e.g., Default Financial Extraction"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="description">Description</Label>
-              <input
-                id="description"
-                type="text"
-                className="mt-2 w-full px-3 py-2 border rounded-md text-sm"
-                placeholder="What this prompt is used for"
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="content">Prompt Content *</Label>
-              <textarea
-                id="content"
-                className="mt-2 w-full h-64 px-3 py-2 border rounded-md text-sm font-mono resize-none"
-                placeholder="Enter the prompt text..."
-                value={formData.content}
-                onChange={(e) => setFormData({ ...formData, content: e.target.value })}
-              />
-              <p className="mt-1 text-xs text-gray-500">
-                This is the prompt that will be sent to the AI model for extraction
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <input
-                id="isDefault"
-                type="checkbox"
-                className="rounded border-gray-300"
-                checked={formData.isDefault}
-                onChange={(e) => setFormData({ ...formData, isDefault: e.target.checked })}
-              />
-              <Label htmlFor="isDefault" className="cursor-pointer">
-                Set as default prompt
-              </Label>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDialog(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                <>{editingPrompt ? "Update" : "Create"} Prompt</>
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

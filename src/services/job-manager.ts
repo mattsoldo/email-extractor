@@ -7,6 +7,7 @@ import { extractTransaction, type TransactionExtraction, type SingleTransaction,
 import { normalizeTransaction, detectOrCreateAccount } from "./transaction-normalizer";
 import { estimateBatchCost, formatCost, getModelConfig } from "./model-config";
 import { SOFTWARE_VERSION } from "@/config/version";
+import { transactionExtractionJsonSchema } from "@/schemas";
 
 export type JobType = "email_scan" | "extraction" | "reprocess";
 export type JobStatus = "pending" | "running" | "paused" | "completed" | "failed" | "cancelled";
@@ -298,6 +299,7 @@ export async function startExtractionJob(
     setId: string; // Required - which set to extract
     modelId?: string; // AI model to use (defaults to DEFAULT_MODEL_ID)
     promptId: string; // Required - which prompt to use
+    customPromptContent?: string; // Optional - overrides the prompt content from database
     concurrency?: number;
     runName?: string; // Optional name for this run
     runDescription?: string; // Optional description for this run
@@ -324,7 +326,16 @@ export async function startExtractionJob(
   }
 
   const prompt = promptResult[0];
-  console.log(`[Job Manager] Using prompt: ${prompt.name} (${prompt.id})`);
+
+  // Use custom prompt content if provided, otherwise use the database prompt content
+  const promptContentToUse = options.customPromptContent || prompt.content;
+  const isCustomPrompt = !!options.customPromptContent && options.customPromptContent !== prompt.content;
+
+  // Use database schema if defined (for experimentation), otherwise use code default
+  const hasCustomSchema = !!prompt.jsonSchema;
+  const promptJsonSchema = prompt.jsonSchema || transactionExtractionJsonSchema;
+
+  console.log(`[Job Manager] Using prompt: ${prompt.name} (${prompt.id})${isCustomPrompt ? " [CUSTOM CONTENT]" : ""}${hasCustomSchema ? " [CUSTOM SCHEMA]" : " [DEFAULT SCHEMA]"}`);
 
   // Check if this combination already exists (same set, model, version, AND prompt)
   const { exists, run } = await checkExistingExtraction(options.setId, modelId, options.promptId);
@@ -358,10 +369,14 @@ export async function startExtractionJob(
     id: jobId,
     type: "extraction",
     status: "pending",
-    metadata: { ...options, softwareVersion: SOFTWARE_VERSION },
+    metadata: {
+      ...options,
+      softwareVersion: SOFTWARE_VERSION,
+      isCustomPrompt, // Track if custom prompt was used
+    },
   });
 
-  runExtractionJob(jobId, { ...options, promptContent: prompt.content }, abortController.signal);
+  runExtractionJob(jobId, { ...options, promptContent: promptContentToUse, jsonSchema: promptJsonSchema }, abortController.signal);
 
   return jobId;
 }
@@ -388,6 +403,7 @@ async function runExtractionJob(
     modelId?: string;
     promptId: string;
     promptContent: string; // The actual prompt text
+    jsonSchema?: Record<string, unknown> | null; // Custom JSON schema for extraction output
     concurrency?: number;
     runName?: string;
     runDescription?: string;
@@ -402,6 +418,7 @@ async function runExtractionJob(
   const modelId = options.modelId || DEFAULT_MODEL_ID;
   const setId = options.setId;
   const promptContent = options.promptContent;
+  const jsonSchema = options.jsonSchema;
 
   // Get model name for progress display
   const [modelResult] = await db
@@ -543,7 +560,7 @@ async function runExtractionJob(
           };
 
           const startTime = Date.now();
-          const extraction = await extractTransaction(parsedEmail, modelId, promptContent);
+          const extraction = await extractTransaction(parsedEmail, modelId, promptContent, jsonSchema);
           const endTime = Date.now();
 
           return { email, extraction, startTime, endTime };

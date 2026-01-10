@@ -35,6 +35,7 @@ export const extractionStatusEnum = pgEnum("extraction_status", [
   "failed",
   "skipped",
   "informational", // Non-transactional emails (alerts, marketing, etc.)
+  "non_financial", // Marketing/promotional emails detected at upload
 ]);
 
 export const jobStatusEnum = pgEnum("job_status", [
@@ -170,22 +171,50 @@ export const transactions = pgTable("transactions", {
   date: timestamp("date").notNull(),
   amount: decimal("amount", { precision: 18, scale: 4 }),
   currency: text("currency").default("USD"),
+  description: text("description"), // Transaction description
 
-  // Common fields (normalized)
-  symbol: text("symbol"), // Stock/option symbol
+  // Security/symbol fields
+  symbol: text("symbol"), // Stock/option symbol (called "security" in some systems)
+  category: text("category"), // Transaction category
+
+  // Quantity fields
   quantity: decimal("quantity", { precision: 18, scale: 6 }),
+  quantityExecuted: decimal("quantity_executed", { precision: 18, scale: 6 }),
+  quantityRemaining: decimal("quantity_remaining", { precision: 18, scale: 6 }),
+
+  // Price fields
   price: decimal("price", { precision: 18, scale: 4 }),
+  executionPrice: decimal("execution_price", { precision: 18, scale: 4 }),
+  priceType: text("price_type"), // market, limit, stop, etc.
+  limitPrice: decimal("limit_price", { precision: 18, scale: 4 }),
+
+  // Fees
   fees: decimal("fees", { precision: 18, scale: 4 }),
+
+  // Options-specific
+  contractSize: integer("contract_size"),
+
+  // Order tracking
+  orderId: text("order_id"), // External order reference
+  orderQuantity: decimal("order_quantity", { precision: 18, scale: 6 }),
+  orderPrice: decimal("order_price", { precision: 18, scale: 4 }),
+  orderStatus: text("order_status"), // pending, filled, partial, cancelled, etc.
+  timeInForce: text("time_in_force"), // day, gtc, ioc, fok, etc.
+  partiallyExecuted: boolean("partially_executed").default(false),
+  executionTime: text("execution_time"), // Time of execution
 
   // Type-specific data stored as JSON
   data: jsonb("data").$type<Record<string, unknown>>(),
+  unclassifiedData: jsonb("unclassified_data").$type<Record<string, unknown>>(), // Fields LLM couldn't map
 
   // Provenance
   sourceEmailId: text("source_email_id").references(() => emails.id),
   extractionRunId: text("extraction_run_id"), // Links to the extraction run that created this
   confidence: decimal("confidence", { precision: 3, scale: 2 }), // AI confidence
+  llmModel: text("llm_model"), // Which LLM model extracted this
 
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 // Field mapping configuration - canonical names and their aliases
@@ -244,12 +273,13 @@ export const jobs = pgTable("jobs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Prompts - reusable extraction prompts
+// Prompts - reusable extraction prompts with optional custom JSON schema
 export const prompts = pgTable("prompts", {
   id: text("id").primaryKey(),
   name: text("name").notNull(), // User-friendly name (e.g., "Default Financial Extraction")
   description: text("description"), // What this prompt is for
   content: text("content").notNull(), // The actual prompt text
+  jsonSchema: jsonb("json_schema").$type<Record<string, unknown>>(), // Custom JSON Schema for extraction output (null uses default)
   isDefault: boolean("is_default").default(false), // Is this the default prompt?
   isActive: boolean("is_active").default(true), // Can this prompt be used?
   createdAt: timestamp("created_at").defaultNow().notNull(),

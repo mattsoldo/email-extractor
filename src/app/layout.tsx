@@ -3,6 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { Navigation } from "@/components/navigation";
+import { UploadProvider } from "@/contexts/upload-context";
+import { UploadProgress } from "@/components/upload-progress";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -29,11 +31,14 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased sidebar-expanded`}
       >
-        <Navigation />
-        <div className="main-content min-h-screen bg-gray-50 transition-all duration-300">
-          {children}
-        </div>
-        <Toaster />
+        <UploadProvider>
+          <Navigation />
+          <div className="main-content min-h-screen bg-gray-50 transition-all duration-300">
+            {children}
+          </div>
+          <UploadProgress />
+          <Toaster />
+        </UploadProvider>
       </body>
     </html>
   );

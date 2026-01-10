@@ -195,7 +195,7 @@ export async function POST(request: NextRequest) {
           bodyHtml: parsed.bodyHtml,
           rawContent: parsed.rawContent,
           headers: parsed.headers,
-          extractionStatus: classification.shouldProcess ? "pending" : "skipped",
+          extractionStatus: classification.shouldProcess ? "pending" : "non_financial",
           skipReason: classification.skipReason || null,
           contentHash,
           setId: targetSetId,
@@ -233,7 +233,7 @@ export async function POST(request: NextRequest) {
             bodyHtml: parsed.bodyHtml,
             rawContent: parsed.rawContent,
             headers: parsed.headers,
-            extractionStatus: classification.shouldProcess ? "pending" as const : "skipped" as const,
+            extractionStatus: classification.shouldProcess ? "pending" as const : "non_financial" as const,
             skipReason: classification.skipReason || null,
           };
           await db.insert(emails).values(minimalEmail);

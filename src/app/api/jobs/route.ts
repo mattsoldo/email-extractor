@@ -99,6 +99,7 @@ export async function POST(request: NextRequest) {
         setId: options.setId,
         modelId: options?.modelId,
         promptId: options.promptId,
+        customPromptContent: options?.customPromptContent, // Optional: overrides prompt content if provided
         concurrency: options?.concurrency || 3,
       });
       break;

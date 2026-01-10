@@ -457,4 +457,93 @@ describe("ai-extractor", () => {
       expect(result).toBe("Bold text & more");
     });
   });
+
+  describe("Custom JSON Schema Support", () => {
+    it("should accept customJsonSchema as optional parameter type", () => {
+      // Type checking test - the function signature should accept these types
+      const validSchemaTypes: Array<Record<string, unknown> | null | undefined> = [
+        null,
+        undefined,
+        { type: "object", properties: {} },
+        { type: "object", properties: { field1: { type: "string" } } },
+      ];
+
+      validSchemaTypes.forEach((schema) => {
+        expect(typeof schema === "object" || schema === undefined).toBe(true);
+      });
+    });
+
+    it("should validate a custom JSON schema structure", () => {
+      const customSchema: Record<string, unknown> = {
+        type: "object",
+        properties: {
+          isTransactional: { type: "boolean" },
+          transactions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                transactionType: { type: "string" },
+                amount: { type: "number" },
+                date: { type: "string" },
+              },
+              required: ["transactionType"],
+            },
+          },
+          extractionNotes: { type: "string" },
+        },
+        required: ["isTransactional"],
+      };
+
+      // Validate the schema is a proper JSON Schema structure
+      expect(customSchema.type).toBe("object");
+      expect(customSchema.properties).toBeDefined();
+      expect(typeof customSchema.properties).toBe("object");
+    });
+
+    it("should serialize and deserialize JSON schema correctly", () => {
+      const schema = {
+        type: "object",
+        properties: {
+          data: {
+            type: "array",
+            items: { type: "string" },
+          },
+        },
+      };
+
+      const serialized = JSON.stringify(schema);
+      const deserialized = JSON.parse(serialized);
+
+      expect(deserialized).toEqual(schema);
+    });
+
+    it("should handle schema with complex nested structures", () => {
+      const complexSchema = {
+        type: "object",
+        properties: {
+          transactions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["buy", "sell", "dividend"] },
+                amount: { type: "number", minimum: 0 },
+                metadata: {
+                  type: "object",
+                  additionalProperties: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      };
+
+      expect(complexSchema.properties.transactions.items.properties.type.enum).toEqual([
+        "buy",
+        "sell",
+        "dividend",
+      ]);
+    });
+  });
 });

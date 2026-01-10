@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Navigation } from "@/components/navigation";
+import { useUpload } from "@/contexts/upload-context";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -47,7 +47,9 @@ import {
   FileUp,
   FolderOpen,
   Loader2,
+  Trash2,
 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 
 interface Email {
   id: string;
@@ -89,8 +91,7 @@ interface EmailSet {
 // Loading fallback component
 function EmailsLoading() {
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Navigation />
+    <div>
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
@@ -124,19 +125,31 @@ function EmailsContent() {
   const [page, setPage] = useState(1);
   const [currentSetName, setCurrentSetName] = useState<string | null>(null);
 
-  // Upload state
+  // Upload state (from global context)
+  const {
+    uploading,
+    uploadProgress,
+    uploadTotal,
+    uploadStage,
+    uploadMessage,
+    uploadResult,
+    cancelling,
+    startUpload,
+    cancelUpload,
+  } = useUpload();
   const [showUploadDialog, setShowUploadDialog] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
-  const [uploadSummary, setUploadSummary] = useState<string | null>(null);
-  const [summarizing, setSummarizing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Email set state
   const [emailSets, setEmailSets] = useState<EmailSet[]>([]);
   const [uploadSetName, setUploadSetName] = useState("");
+
+  // Selection state
+  const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set());
+  const [selectAllMode, setSelectAllMode] = useState<"page" | "all" | null>(null);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Sync URL param to state
   useEffect(() => {
@@ -225,6 +238,12 @@ function EmailsContent() {
             <Ban className="h-3 w-3" /> Skipped
           </Badge>
         );
+      case "non_financial":
+        return (
+          <Badge variant="outline" className="gap-1 text-gray-500">
+            <Ban className="h-3 w-3" /> Non-Financial
+          </Badge>
+        );
       case "informational":
         return (
           <Badge variant="outline" className="gap-1 text-blue-600">
@@ -251,119 +270,98 @@ function EmailsContent() {
     }
   };
 
-  const handleUpload = async (files: FileList | File[]) => {
-    const fileArray = Array.from(files).filter(
-      (f) => f.name.endsWith(".eml") || f.name.endsWith(".zip")
-    );
-    if (fileArray.length === 0) {
-      return;
+  // Selection helpers
+  const toggleSelectEmail = (emailId: string) => {
+    setSelectedEmails((prev) => {
+      const next = new Set(prev);
+      if (next.has(emailId)) {
+        next.delete(emailId);
+      } else {
+        next.add(emailId);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedEmails.size === emails.length && selectAllMode !== null) {
+      // If all on page selected (or all mode), deselect everything
+      setSelectedEmails(new Set());
+      setSelectAllMode(null);
+    } else {
+      // Select all on current page
+      setSelectedEmails(new Set(emails.map((e) => e.id)));
+      setSelectAllMode("page");
     }
+  };
 
-    setUploading(true);
-    setUploadProgress(0);
-    setUploadResult(null);
+  const selectAllEmails = () => {
+    setSelectAllMode("all");
+  };
 
-    // Aggregate results across batches
-    const aggregatedResults: UploadResult = {
-      uploaded: 0,
-      skipped: 0,
-      failed: 0,
-      details: [],
-    };
+  const clearSelection = () => {
+    setSelectedEmails(new Set());
+    setSelectAllMode(null);
+  };
 
-    // Upload in batches to avoid timeout
-    const BATCH_SIZE = 50;
-    const totalBatches = Math.ceil(fileArray.length / BATCH_SIZE);
-    let createdSetId: string | null = null;
+  const isAllSelected = emails.length > 0 && selectedEmails.size === emails.length;
+  const isSomeSelected = selectedEmails.size > 0 && selectedEmails.size < emails.length;
+  const totalEmails = pagination?.total || 0;
+  const showSelectAllBanner = selectAllMode === "page" && isAllSelected && totalEmails > emails.length;
 
+  // Clear selection when emails change (e.g., pagination, filters)
+  useEffect(() => {
+    setSelectedEmails(new Set());
+    setSelectAllMode(null);
+  }, [page, statusFilter, setFilter]);
+
+  const deleteSelectedEmails = async () => {
+    if (selectedEmails.size === 0 && selectAllMode !== "all") return;
+
+    setDeleting(true);
     try {
-      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-        const start = batchIndex * BATCH_SIZE;
-        const end = Math.min(start + BATCH_SIZE, fileArray.length);
-        const batch = fileArray.slice(start, end);
+      let body: Record<string, unknown>;
 
-        const formData = new FormData();
-        batch.forEach((file) => {
-          formData.append("files", file);
-        });
-
-        // For first batch, include optional set name
-        if (batchIndex === 0 && uploadSetName.trim()) {
-          formData.append("setName", uploadSetName.trim());
-        } else if (createdSetId) {
-          // Use the set created in first batch for subsequent batches
-          formData.append("setId", createdSetId);
-        }
-
-        const res = await fetch("/api/emails/upload", {
-          method: "POST",
-          body: formData,
-        });
-
-        const data = await res.json();
-
-        if (data.results) {
-          aggregatedResults.uploaded += data.results.uploaded;
-          aggregatedResults.skipped += data.results.skipped;
-          aggregatedResults.failed += data.results.failed;
-          // Only keep first 100 details to avoid UI slowdown
-          if (aggregatedResults.details.length < 100) {
-            aggregatedResults.details.push(
-              ...data.results.details.slice(0, 100 - aggregatedResults.details.length)
-            );
-          }
-        }
-
-        // Capture set ID from first batch
-        if (batchIndex === 0 && data.set?.id) {
-          createdSetId = data.set.id;
-        }
-
-        // Update progress
-        const progress = Math.round(((batchIndex + 1) / totalBatches) * 100);
-        setUploadProgress(progress);
-        setUploadResult({ ...aggregatedResults });
+      if (selectAllMode === "all") {
+        // Delete all emails matching current filters
+        body = {
+          deleteAll: true,
+          filters: {
+            status: statusFilter !== "all" ? statusFilter : undefined,
+            setId: setFilter !== "all" ? setFilter : undefined,
+          },
+        };
+      } else {
+        // Delete specific selected emails
+        body = { emailIds: Array.from(selectedEmails) };
       }
 
-      // Refresh sets list if a new set was created
-      if (createdSetId) {
-        fetchEmailSets();
+      const res = await fetch("/api/emails/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to delete emails");
       }
 
-      // Generate AI summary if there were errors or skips
-      if (aggregatedResults.failed > 0 || aggregatedResults.skipped > 0) {
-        setSummarizing(true);
-        try {
-          const summaryRes = await fetch("/api/uploads/summarize-errors", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              errors: aggregatedResults.details.filter(d => d.status !== "uploaded"),
-              uploaded: aggregatedResults.uploaded,
-              skipped: aggregatedResults.skipped,
-              failed: aggregatedResults.failed,
-            }),
-          });
-          const summaryData = await summaryRes.json();
-          setUploadSummary(summaryData.summary);
-        } catch (summaryError) {
-          console.error("Failed to generate summary:", summaryError);
-        } finally {
-          setSummarizing(false);
-        }
-      }
-
-      // Refresh email list after upload
-      setTimeout(() => {
-        fetchEmails();
-      }, 500);
+      setSelectedEmails(new Set());
+      setSelectAllMode(null);
+      setShowDeleteDialog(false);
+      fetchEmails();
     } catch (error) {
-      console.error("Upload failed:", error);
-      aggregatedResults.failed += fileArray.length - (aggregatedResults.uploaded + aggregatedResults.skipped + aggregatedResults.failed);
-      setUploadResult(aggregatedResults);
+      console.error("Failed to delete emails:", error);
     } finally {
-      setUploading(false);
+      setDeleting(false);
     }
+  };
+
+  const handleUpload = async (files: FileList | File[]) => {
+    await startUpload(files, uploadSetName);
+    // Refresh data after upload completes
+    fetchEmailSets();
+    fetchEmails();
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -396,16 +394,11 @@ function EmailsContent() {
 
   const openUploadDialog = () => {
     setShowUploadDialog(true);
-    setUploadResult(null);
-    setUploadSummary(null);
-    setUploadProgress(0);
     setUploadSetName("");
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <Navigation />
-
+    <div>
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex items-center justify-between mb-8">
           <div>
@@ -491,10 +484,62 @@ function EmailsContent() {
                 <SelectItem value="skipped">
                   Skipped ({statusCounts.skipped || 0})
                 </SelectItem>
+                <SelectItem value="non_financial">
+                  Non-Financial ({statusCounts.non_financial || 0})
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
+
+          {/* Selection Actions */}
+          {(selectedEmails.size > 0 || selectAllMode === "all") && (
+            <div className="flex items-center gap-3 ml-auto">
+              <span className="text-sm text-gray-600">
+                {selectAllMode === "all" ? totalEmails : selectedEmails.size} selected
+              </span>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setShowDeleteDialog(true)}
+                className="gap-2"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
+            </div>
+          )}
         </div>
+
+        {/* Select All Banner */}
+        {(showSelectAllBanner || selectAllMode === "all") && (
+          <div className="flex items-center justify-center gap-2 py-2 px-4 mb-2 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+            {selectAllMode === "page" ? (
+              <>
+                <span className="text-blue-800">
+                  All {emails.length} emails on this page are selected.
+                </span>
+                <button
+                  onClick={selectAllEmails}
+                  className="text-blue-600 hover:text-blue-800 font-medium underline"
+                >
+                  Select all {totalEmails} emails
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="text-blue-800">
+                  All {totalEmails} emails are selected.
+                </span>
+                <button
+                  onClick={clearSelection}
+                  className="text-blue-600 hover:text-blue-800 font-medium underline"
+                >
+                  Clear selection
+                </button>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Emails Table */}
         <Card>
@@ -502,29 +547,51 @@ function EmailsContent() {
             <Table className="table-fixed w-full min-w-[700px]">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[35%]">Subject</TableHead>
-                  <TableHead className="w-[20%]">Sender</TableHead>
+                  <TableHead className="w-[40px]">
+                    <Checkbox
+                      checked={isAllSelected}
+                      ref={(el) => {
+                        if (el) {
+                          (el as HTMLButtonElement).dataset.state = isSomeSelected ? "indeterminate" : isAllSelected ? "checked" : "unchecked";
+                        }
+                      }}
+                      onCheckedChange={toggleSelectAll}
+                      aria-label="Select all emails"
+                    />
+                  </TableHead>
+                  <TableHead className="w-[33%]">Subject</TableHead>
+                  <TableHead className="w-[18%]">Sender</TableHead>
                   <TableHead className="w-[12%]">Date</TableHead>
-                  <TableHead className="w-[23%]">Status</TableHead>
+                  <TableHead className="w-[22%]">Status</TableHead>
                   <TableHead className="w-[10%]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8">
+                    <TableCell colSpan={6} className="text-center py-8">
                       Loading...
                     </TableCell>
                   </TableRow>
                 ) : emails.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8">
+                    <TableCell colSpan={6} className="text-center py-8">
                       No emails found
                     </TableCell>
                   </TableRow>
                 ) : (
                   emails.map((email) => (
-                    <TableRow key={email.id}>
+                    <TableRow
+                      key={email.id}
+                      className={selectedEmails.has(email.id) ? "bg-blue-50" : ""}
+                    >
+                      <TableCell>
+                        <Checkbox
+                          checked={selectedEmails.has(email.id)}
+                          onCheckedChange={() => toggleSelectEmail(email.id)}
+                          aria-label={`Select ${email.subject || "email"}`}
+                        />
+                      </TableCell>
                       <TableCell className="font-medium">
                         <span className="block truncate" title={email.subject || "(no subject)"}>
                           {email.subject || "(no subject)"}
@@ -748,13 +815,38 @@ function EmailsContent() {
               </div>
 
               {/* Upload Progress */}
-              {uploading && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <span>Uploading...</span>
-                    <span>{uploadProgress}%</span>
+              {(uploading || cancelling) && (
+                <div className="space-y-3 p-4 bg-blue-50 rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                      <span className="font-medium text-blue-800">{uploadMessage}</span>
+                    </div>
+                    {uploading && !cancelling && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={cancelUpload}
+                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      >
+                        <XCircle className="h-4 w-4 mr-1" />
+                        Cancel
+                      </Button>
+                    )}
                   </div>
-                  <Progress value={uploadProgress} />
+                  {uploadTotal > 0 && (
+                    <>
+                      <Progress value={(uploadProgress / uploadTotal) * 100} className="h-2" />
+                      <div className="flex items-center justify-between text-xs text-blue-600">
+                        <span>
+                          {uploadStage === "extracting" && "Reading files..."}
+                          {uploadStage === "parsing" && "Parsing emails..."}
+                          {uploadStage === "saving" && "Saving to database..."}
+                        </span>
+                        <span>{uploadProgress} / {uploadTotal}</span>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -810,22 +902,7 @@ function EmailsContent() {
                     </ScrollArea>
                   )}
 
-                  {/* AI Summary */}
-                  {summarizing && (
-                    <div className="flex items-center gap-2 p-3 bg-blue-50 rounded-lg text-sm text-blue-700">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Analyzing upload results...
-                    </div>
-                  )}
-                  {uploadSummary && !summarizing && (
-                    <div className="p-3 bg-blue-50 rounded-lg text-sm text-blue-800">
-                      <div className="flex items-start gap-2">
-                        <Info className="h-4 w-4 mt-0.5 flex-shrink-0" />
-                        <span>{uploadSummary}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                  </div>
               )}
 
               {/* Actions */}
@@ -846,6 +923,63 @@ function EmailsContent() {
                     Done
                   </Button>
                 )}
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Delete Confirmation Dialog */}
+        <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-red-600">
+                <Trash2 className="h-5 w-5" />
+                Delete Emails
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <p className="text-gray-600">
+                Are you sure you want to delete{" "}
+                <strong>{selectAllMode === "all" ? totalEmails : selectedEmails.size}</strong> email
+                {(selectAllMode === "all" ? totalEmails : selectedEmails.size) === 1 ? "" : "s"}? This action cannot be
+                undone.
+              </p>
+              {selectAllMode === "all" && (
+                <p className="text-sm text-amber-600 font-medium">
+                  This will delete all emails matching your current filters.
+                </p>
+              )}
+              <p className="text-sm text-gray-500">
+                All associated transactions and extraction data will also be
+                deleted.
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowDeleteDialog(false)}
+                  disabled={deleting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={deleteSelectedEmails}
+                  disabled={deleting}
+                  className="gap-2"
+                >
+                  {deleting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Deleting...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="h-4 w-4" />
+                      Delete {selectAllMode === "all" ? totalEmails : selectedEmails.size} Email
+                      {(selectAllMode === "all" ? totalEmails : selectedEmails.size) === 1 ? "" : "s"}
+                    </>
+                  )}
+                </Button>
               </div>
             </div>
           </DialogContent>

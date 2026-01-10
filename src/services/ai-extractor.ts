@@ -1,8 +1,9 @@
-import { generateObject } from "ai";
+import { generateText, Output, jsonSchema } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import { google } from "@ai-sdk/google";
 import { z } from "zod";
+import type { JSONSchema7 } from "json-schema";
 import type { ParsedEmail } from "./email-parser";
 import { getModelConfig, DEFAULT_MODEL_ID, type ModelConfig, type ModelProvider } from "./model-config";
 
@@ -212,11 +213,13 @@ async function getModelInstance(modelId: string) {
 /**
  * Extract transaction data from a parsed email using the specified model
  * Note: customInstructions must be provided from the prompts database
+ * @param customJsonSchema - Optional custom JSON schema to use instead of TransactionExtractionSchema
  */
 export async function extractTransaction(
   email: ParsedEmail,
   modelId: string = DEFAULT_MODEL_ID,
-  customInstructions?: string
+  customInstructions?: string,
+  customJsonSchema?: Record<string, unknown> | null
 ): Promise<TransactionExtraction> {
   try {
     // Prepare the email content for the AI
@@ -232,9 +235,47 @@ export async function extractTransaction(
 
     const instructions = customInstructions;
 
-    const { object } = await generateObject({
+    // Use custom JSON schema if provided, otherwise use default Zod schema
+    if (customJsonSchema) {
+      // Custom schema path - output type is unknown, cast to TransactionExtraction
+      // Callers using custom schemas should handle the different output structure
+      const { output } = await generateText({
+        model,
+        output: Output.object({
+          schema: jsonSchema(customJsonSchema as JSONSchema7),
+          name: "transaction_extraction",
+          description: "Extract data from email content",
+        }),
+        prompt: `You are a data extraction expert. Analyze this email and extract all relevant information.
+
+EMAIL SUBJECT: ${email.subject || "(no subject)"}
+
+EMAIL DATE: ${email.date?.toISOString() || "(unknown)"}
+
+EMAIL SENDER: ${email.sender || "(unknown)"}
+
+EMAIL CONTENT:
+${emailContent}
+
+${instructions}`,
+      });
+
+      if (!output) {
+        throw new Error("Failed to extract structured data from email");
+      }
+
+      console.log(`[AI Extractor] ✓ Extraction successful for email ${email.id} with custom schema`);
+      return output as unknown as TransactionExtraction;
+    }
+
+    // Default schema path - output is properly typed as TransactionExtraction
+    const { output } = await generateText({
       model,
-      schema: TransactionExtractionSchema,
+      output: Output.object({
+        schema: TransactionExtractionSchema,
+        name: "transaction_extraction",
+        description: "Extract financial transactions from email content",
+      }),
       prompt: `You are a financial data extraction expert. Analyze this email and extract all financial transaction information.
 
 EMAIL SUBJECT: ${email.subject || "(no subject)"}
@@ -249,9 +290,14 @@ ${emailContent}
 ${instructions}`,
     });
 
-    console.log(`[AI Extractor] ✓ Extraction successful for email ${email.id}: ${object.isTransactional ? object.transactions.length + " transaction(s)" : "non-transactional"}`);
+    // output can be undefined if extraction fails, handle gracefully
+    if (!output) {
+      throw new Error("Failed to extract structured data from email");
+    }
 
-    return object;
+    console.log(`[AI Extractor] ✓ Extraction successful for email ${email.id}: ${output.isTransactional ? output.transactions.length + " transaction(s)" : "non-transactional"}`);
+
+    return output;
   } catch (error) {
     console.error(`[AI Extractor] ✗ Extraction failed for email ${email.id} (${email.subject}) with model ${modelId}:`, error);
 

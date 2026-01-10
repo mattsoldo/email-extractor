@@ -41,7 +41,7 @@ export async function PUT(
   try {
     const { id } = await params;
     const body = await request.json();
-    const { name, description, content, isDefault, isActive } = body;
+    const { name, description, content, isDefault, isActive, jsonSchema } = body;
 
     if (!name || !content) {
       return NextResponse.json(
@@ -79,6 +79,7 @@ export async function PUT(
         name,
         description: description || null,
         content,
+        jsonSchema: jsonSchema !== undefined ? jsonSchema : existing.jsonSchema,
         isDefault: isDefault !== undefined ? isDefault : existing.isDefault,
         isActive: isActive !== undefined ? isActive : existing.isActive,
         updatedAt: new Date(),

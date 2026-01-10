@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { db } from "@/db";
 import { emails, emailSets, NewEmail } from "@/db/schema";
 import { parseEmlContent, parseTxtContent, classifyEmail } from "@/services/email-parser";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import JSZip from "jszip";
 import { createHash } from "crypto";
@@ -232,14 +232,20 @@ export async function POST(request: NextRequest) {
 
         // Get all existing hashes in one query
         const allHashes = emailsWithHashes.map(e => e.contentHash);
-        const { inArray } = await import("drizzle-orm");
-        const existingHashSet = new Set(
-          (await db
-            .select({ contentHash: emails.contentHash })
-            .from(emails)
-            .where(inArray(emails.contentHash, allHashes))
-          ).map(e => e.contentHash)
-        );
+        let existingHashSet = new Set<string>();
+
+        if (allHashes.length > 0) {
+          try {
+            const existingHashes = await db
+              .select({ contentHash: emails.contentHash })
+              .from(emails)
+              .where(inArray(emails.contentHash, allHashes));
+            existingHashSet = new Set(existingHashes.map(e => e.contentHash));
+          } catch (hashError) {
+            console.error("Error checking for duplicates:", hashError);
+            // Continue without deduplication if check fails
+          }
+        }
 
         // Prepare batch insert
         const results = {

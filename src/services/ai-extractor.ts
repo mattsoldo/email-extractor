@@ -297,8 +297,10 @@ ${emailContent}`;
         throw new Error("Failed to extract structured data from email");
       }
 
-      console.log(`[AI Extractor] ✓ Extraction successful for email ${email.id} with custom schema`);
-      return output as unknown as TransactionExtraction;
+      // Cast and log with transaction info (same as default schema path)
+      const result = output as unknown as TransactionExtraction;
+      console.log(`[AI Extractor] ✓ Extraction successful for email ${email.id}: ${result.isTransactional ? result.transactions?.length + " transaction(s)" : "non-transactional"} (custom schema)`);
+      return result;
     }
 
     // Default schema path - output is properly typed as TransactionExtraction

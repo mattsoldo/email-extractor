@@ -22,20 +22,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { format } from "date-fns";
-import { ChevronLeft, ChevronRight, Eye, RefreshCw, Download, FolderOpen, History, FileSpreadsheet, FileText, Mail } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Download, FolderOpen, History, FileSpreadsheet, FileText } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 interface EmailSet {
   id: string;
@@ -97,6 +91,7 @@ const transactionTypes = [
 ];
 
 export default function TransactionsPage() {
+  const router = useRouter();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [typeCounts, setTypeCounts] = useState<Record<string, number>>({});
@@ -104,8 +99,6 @@ export default function TransactionsPage() {
   const [setFilter, setSetFilter] = useState<string>("all");
   const [runFilter, setRunFilter] = useState<string>("all");
   const [loading, setLoading] = useState(true);
-  const [selectedTransaction, setSelectedTransaction] =
-    useState<Transaction | null>(null);
   const [page, setPage] = useState(1);
 
   // Filter options
@@ -344,25 +337,28 @@ export default function TransactionsPage() {
                   <TableHead className="text-right">Quantity</TableHead>
                   <TableHead className="text-right">Price</TableHead>
                   <TableHead className="text-right">Amount</TableHead>
-                  <TableHead className="w-[80px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center py-8">
+                    <TableCell colSpan={7} className="text-center py-8">
                       Loading...
                     </TableCell>
                   </TableRow>
                 ) : transactions.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center py-8">
+                    <TableCell colSpan={7} className="text-center py-8">
                       No transactions found
                     </TableCell>
                   </TableRow>
                 ) : (
                   transactions.map((tx) => (
-                    <TableRow key={tx.id}>
+                    <TableRow
+                      key={tx.id}
+                      className="cursor-pointer hover:bg-gray-50"
+                      onClick={() => router.push(`/transactions/${tx.id}`)}
+                    >
                       <TableCell className="text-gray-600">
                         {tx.date
                           ? format(new Date(tx.date), "MMM d, yyyy")
@@ -395,24 +391,6 @@ export default function TransactionsPage() {
                       </TableCell>
                       <TableCell className="text-right font-medium">
                         {formatAmount(tx.amount, tx.currency)}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setSelectedTransaction(tx)}
-                          >
-                            <Eye className="h-4 w-4" />
-                          </Button>
-                          {tx.sourceEmailId && (
-                            <Link href={`/emails/${tx.sourceEmailId}`}>
-                              <Button variant="ghost" size="sm" title="View source email">
-                                <Mail className="h-4 w-4" />
-                              </Button>
-                            </Link>
-                          )}
-                        </div>
                       </TableCell>
                     </TableRow>
                   ))
@@ -456,95 +434,6 @@ export default function TransactionsPage() {
           </div>
         )}
 
-        {/* Transaction Detail Dialog */}
-        <Dialog
-          open={!!selectedTransaction}
-          onOpenChange={() => setSelectedTransaction(null)}
-        >
-          <DialogContent className="max-w-2xl max-h-[80vh]">
-            <DialogHeader>
-              <DialogTitle className="capitalize">
-                {selectedTransaction?.type.replace(/_/g, " ")} Transaction
-              </DialogTitle>
-            </DialogHeader>
-            <ScrollArea className="h-[60vh]">
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <span className="text-gray-500">Date:</span>{" "}
-                    {selectedTransaction?.date
-                      ? format(
-                          new Date(selectedTransaction.date),
-                          "MMM d, yyyy h:mm a"
-                        )
-                      : "-"}
-                  </div>
-                  <div>
-                    <span className="text-gray-500">Amount:</span>{" "}
-                    {formatAmount(
-                      selectedTransaction?.amount || null,
-                      selectedTransaction?.currency || "USD"
-                    )}
-                  </div>
-                  <div>
-                    <span className="text-gray-500">Account:</span>{" "}
-                    {selectedTransaction?.account?.displayName || "-"}
-                  </div>
-                  <div>
-                    <span className="text-gray-500">Symbol:</span>{" "}
-                    {selectedTransaction?.symbol || "-"}
-                  </div>
-                  {selectedTransaction?.quantity && (
-                    <div>
-                      <span className="text-gray-500">Quantity:</span>{" "}
-                      {selectedTransaction.quantity}
-                    </div>
-                  )}
-                  {selectedTransaction?.price && (
-                    <div>
-                      <span className="text-gray-500">Price:</span>{" "}
-                      {formatAmount(
-                        selectedTransaction.price,
-                        selectedTransaction.currency
-                      )}
-                    </div>
-                  )}
-                  {selectedTransaction?.fees && (
-                    <div>
-                      <span className="text-gray-500">Fees:</span>{" "}
-                      {formatAmount(
-                        selectedTransaction.fees,
-                        selectedTransaction.currency
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {selectedTransaction?.data &&
-                  Object.keys(selectedTransaction.data).length > 0 && (
-                    <div>
-                      <h3 className="font-semibold mb-2">Additional Details</h3>
-                      <pre className="p-3 bg-gray-100 rounded-lg text-xs overflow-auto">
-                        {JSON.stringify(selectedTransaction.data, null, 2)}
-                      </pre>
-                    </div>
-                  )}
-
-                {/* Source Email Link */}
-                {selectedTransaction?.sourceEmailId && (
-                  <div className="pt-4 border-t">
-                    <Link href={`/emails/${selectedTransaction.sourceEmailId}`}>
-                      <Button variant="outline" className="gap-2 w-full">
-                        <Mail className="h-4 w-4" />
-                        View Source Email
-                      </Button>
-                    </Link>
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-          </DialogContent>
-        </Dialog>
       </main>
     </div>
   );

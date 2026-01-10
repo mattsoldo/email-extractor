@@ -3,17 +3,9 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Collapsible,
   CollapsibleContent,
@@ -23,25 +15,14 @@ import { format } from "date-fns";
 import {
   ArrowLeft,
   Mail,
-  DollarSign,
-  Calendar,
-  Building2,
-  TrendingUp,
-  Hash,
-  Percent,
   ChevronDown,
   ChevronRight,
-  RefreshCw,
   FileText,
   Code,
-  Cpu,
-  Clock,
-  ExternalLink,
   Loader2,
-  Send,
-  Edit3,
+  Layers,
+  History,
 } from "lucide-react";
-import { toast } from "sonner";
 import Link from "next/link";
 
 interface Transaction {
@@ -89,7 +70,6 @@ interface Email {
   senderName: string | null;
   recipient: string | null;
   recipientName: string | null;
-  cc: string | null;
   date: string | null;
   bodyText: string | null;
   bodyHtml: string | null;
@@ -101,88 +81,44 @@ interface Account {
   accountNumber: string | null;
   accountName: string | null;
   institution: string | null;
-  accountType: string | null;
 }
 
-interface ExtractionRun {
-  id: string;
-  version: number;
+interface RelatedTransaction {
+  transaction: Transaction;
+  runVersion: number | null;
   modelName: string | null;
   promptName: string | null;
-  startedAt: string;
   completedAt: string | null;
 }
 
-interface Prompt {
-  id: string;
-  name: string;
-  description: string | null;
-  content: string;
-  isDefault: boolean;
-}
-
-// Field definitions for organized display
-const FIELD_GROUPS = {
-  core: {
-    label: "Core Details",
-    fields: ["type", "date", "amount", "currency", "description", "fees"],
-  },
-  security: {
-    label: "Security & Symbol",
-    fields: ["symbol", "category"],
-  },
-  quantity: {
-    label: "Quantity",
-    fields: ["quantity", "quantityExecuted", "quantityRemaining"],
-  },
-  pricing: {
-    label: "Pricing",
-    fields: ["price", "executionPrice", "priceType", "limitPrice"],
-  },
-  options: {
-    label: "Options",
-    fields: ["contractSize"],
-  },
-  order: {
-    label: "Order Details",
-    fields: ["orderId", "orderQuantity", "orderPrice", "orderStatus", "timeInForce", "partiallyExecuted", "executionTime"],
-  },
-  metadata: {
-    label: "Extraction Metadata",
-    fields: ["confidence", "llmModel", "extractionRunId", "createdAt", "updatedAt"],
-  },
-};
-
-const FIELD_LABELS: Record<string, string> = {
-  type: "Transaction Type",
-  date: "Date",
-  amount: "Amount",
-  currency: "Currency",
-  description: "Description",
-  fees: "Fees",
-  symbol: "Symbol",
-  category: "Category",
-  quantity: "Quantity",
-  quantityExecuted: "Quantity Executed",
-  quantityRemaining: "Quantity Remaining",
-  price: "Price",
-  executionPrice: "Execution Price",
-  priceType: "Price Type",
-  limitPrice: "Limit Price",
-  contractSize: "Contract Size",
-  orderId: "Order ID",
-  orderQuantity: "Order Quantity",
-  orderPrice: "Order Price",
-  orderStatus: "Order Status",
-  timeInForce: "Time In Force",
-  partiallyExecuted: "Partially Executed",
-  executionTime: "Execution Time",
-  confidence: "Confidence",
-  llmModel: "AI Model",
-  extractionRunId: "Extraction Run",
-  createdAt: "Created",
-  updatedAt: "Updated",
-};
+// All extractable fields with labels
+const ALL_FIELDS: Array<{ key: string; label: string }> = [
+  { key: "type", label: "Type" },
+  { key: "date", label: "Date" },
+  { key: "amount", label: "Amount" },
+  { key: "currency", label: "Currency" },
+  { key: "description", label: "Description" },
+  { key: "fees", label: "Fees" },
+  { key: "symbol", label: "Symbol" },
+  { key: "category", label: "Category" },
+  { key: "quantity", label: "Quantity" },
+  { key: "quantityExecuted", label: "Quantity Executed" },
+  { key: "quantityRemaining", label: "Quantity Remaining" },
+  { key: "price", label: "Price" },
+  { key: "executionPrice", label: "Execution Price" },
+  { key: "priceType", label: "Price Type" },
+  { key: "limitPrice", label: "Limit Price" },
+  { key: "contractSize", label: "Contract Size" },
+  { key: "orderId", label: "Order ID" },
+  { key: "orderQuantity", label: "Order Quantity" },
+  { key: "orderPrice", label: "Order Price" },
+  { key: "orderStatus", label: "Order Status" },
+  { key: "timeInForce", label: "Time In Force" },
+  { key: "partiallyExecuted", label: "Partially Executed" },
+  { key: "executionTime", label: "Execution Time" },
+  { key: "confidence", label: "Confidence" },
+  { key: "llmModel", label: "AI Model" },
+];
 
 export default function TransactionDetailPage() {
   const params = useParams();
@@ -194,23 +130,16 @@ export default function TransactionDetailPage() {
   const [email, setEmail] = useState<Email | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const [toAccount, setToAccount] = useState<Account | null>(null);
-  const [extractionRun, setExtractionRun] = useState<ExtractionRun | null>(null);
+  const [sameRunTransactions, setSameRunTransactions] = useState<Transaction[]>([]);
+  const [otherRunTransactions, setOtherRunTransactions] = useState<RelatedTransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [emptyFieldsOpen, setEmptyFieldsOpen] = useState(false);
   const [emailTab, setEmailTab] = useState("rendered");
-
-  // Re-analyze state
-  const [prompts, setPrompts] = useState<Prompt[]>([]);
-  const [selectedPromptId, setSelectedPromptId] = useState<string>("");
-  const [customPrompt, setCustomPrompt] = useState<string>("");
-  const [useCustomPrompt, setUseCustomPrompt] = useState(false);
-  const [reanalyzing, setReanalyzing] = useState(false);
 
   const fetchTransaction = async () => {
     try {
       const res = await fetch(`/api/transactions/${transactionId}`);
       if (!res.ok) {
-        toast.error("Transaction not found");
         router.push("/transactions");
         return;
       }
@@ -219,83 +148,21 @@ export default function TransactionDetailPage() {
       setEmail(data.email);
       setAccount(data.account);
       setToAccount(data.toAccount);
-      setExtractionRun(data.extractionRun);
+      setSameRunTransactions(data.sameRunTransactions || []);
+      setOtherRunTransactions(data.otherRunTransactions || []);
     } catch (error) {
       console.error("Failed to fetch transaction:", error);
-      toast.error("Failed to load transaction");
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchPrompts = async () => {
-    try {
-      const res = await fetch("/api/prompts");
-      const data = await res.json();
-      setPrompts(data.prompts || []);
-      if (data.defaultPromptId) {
-        setSelectedPromptId(data.defaultPromptId);
-        // Load the default prompt content
-        const defaultPrompt = data.prompts?.find((p: Prompt) => p.id === data.defaultPromptId);
-        if (defaultPrompt) {
-          setCustomPrompt(defaultPrompt.content);
-        }
-      }
-    } catch (error) {
-      console.error("Failed to fetch prompts:", error);
-    }
-  };
-
   useEffect(() => {
     fetchTransaction();
-    fetchPrompts();
   }, [transactionId]);
 
-  // Update custom prompt when selected prompt changes
-  useEffect(() => {
-    if (selectedPromptId && !useCustomPrompt) {
-      const prompt = prompts.find(p => p.id === selectedPromptId);
-      if (prompt) {
-        setCustomPrompt(prompt.content);
-      }
-    }
-  }, [selectedPromptId, prompts, useCustomPrompt]);
-
-  const handleReanalyze = async () => {
-    if (!email) return;
-
-    setReanalyzing(true);
-    try {
-      const res = await fetch(`/api/emails/${email.id}/reprocess`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          promptId: selectedPromptId,
-          customPromptContent: useCustomPrompt ? customPrompt : undefined,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        toast.error(data.error || "Failed to re-analyze email");
-        return;
-      }
-
-      toast.success("Email re-analyzed successfully");
-
-      // Navigate to the email page to see all extractions
-      router.push(`/emails/${email.id}`);
-    } catch (error) {
-      console.error("Re-analyze failed:", error);
-      toast.error("Failed to re-analyze email");
-    } finally {
-      setReanalyzing(false);
-    }
-  };
-
   const formatValue = (key: string, value: unknown): string => {
-    if (value === null || value === undefined) return "";
+    if (value === null || value === undefined || value === "") return "";
 
     if (key === "date" || key === "createdAt" || key === "updatedAt") {
       try {
@@ -326,6 +193,10 @@ export default function TransactionDetailPage() {
       return value ? "Yes" : "No";
     }
 
+    if (key === "type") {
+      return String(value).replace(/_/g, " ");
+    }
+
     return String(value);
   };
 
@@ -339,14 +210,8 @@ export default function TransactionDetailPage() {
     return value === null || value === undefined || value === "";
   };
 
-  const getPopulatedFields = (fields: string[]): string[] => {
-    return fields.filter(f => !isFieldEmpty(f));
-  };
-
-  const getEmptyFields = (): string[] => {
-    const allFields = Object.values(FIELD_GROUPS).flatMap(g => g.fields);
-    return allFields.filter(f => isFieldEmpty(f));
-  };
+  const populatedFields = ALL_FIELDS.filter(f => !isFieldEmpty(f.key));
+  const emptyFields = ALL_FIELDS.filter(f => isFieldEmpty(f.key));
 
   const renderEmailContent = () => {
     if (!email) return null;
@@ -356,16 +221,15 @@ export default function TransactionDetailPage() {
         <iframe
           ref={iframeRef}
           srcDoc={email.bodyHtml}
-          className="w-full min-h-[600px] border-0 bg-white"
+          className="w-full min-h-[500px] border-0 bg-white"
           sandbox="allow-same-origin"
           title="Email content"
           onLoad={() => {
             if (iframeRef.current) {
               const doc = iframeRef.current.contentDocument;
               if (doc) {
-                // Adjust iframe height to content
                 const height = doc.body.scrollHeight;
-                iframeRef.current.style.height = `${Math.max(600, height + 50)}px`;
+                iframeRef.current.style.height = `${Math.max(500, height + 50)}px`;
               }
             }
           }}
@@ -375,7 +239,7 @@ export default function TransactionDetailPage() {
 
     if (emailTab === "text" || (!email.bodyHtml && emailTab === "rendered")) {
       return (
-        <pre className="whitespace-pre-wrap font-mono text-sm p-4 bg-gray-50 rounded-lg overflow-auto max-h-[800px]">
+        <pre className="whitespace-pre-wrap font-mono text-sm p-4 bg-gray-50 rounded-lg overflow-auto max-h-[600px]">
           {email.bodyText || "No text content available"}
         </pre>
       );
@@ -383,7 +247,7 @@ export default function TransactionDetailPage() {
 
     if (emailTab === "html") {
       return (
-        <pre className="whitespace-pre-wrap font-mono text-xs p-4 bg-gray-900 text-green-400 rounded-lg overflow-auto max-h-[800px]">
+        <pre className="whitespace-pre-wrap font-mono text-xs p-4 bg-gray-900 text-green-400 rounded-lg overflow-auto max-h-[600px]">
           {email.bodyHtml || "No HTML content available"}
         </pre>
       );
@@ -391,7 +255,7 @@ export default function TransactionDetailPage() {
 
     if (emailTab === "raw") {
       return (
-        <pre className="whitespace-pre-wrap font-mono text-xs p-4 bg-gray-900 text-gray-300 rounded-lg overflow-auto max-h-[800px]">
+        <pre className="whitespace-pre-wrap font-mono text-xs p-4 bg-gray-900 text-gray-300 rounded-lg overflow-auto max-h-[600px]">
           {email.rawContent || "No raw content available"}
         </pre>
       );
@@ -400,9 +264,18 @@ export default function TransactionDetailPage() {
     return null;
   };
 
+  const formatTransactionAmount = (tx: Transaction) => {
+    if (!tx.amount) return "-";
+    const num = parseFloat(tx.amount);
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: tx.currency || "USD",
+    }).format(num);
+  };
+
   if (loading) {
     return (
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex items-center justify-center h-64">
           <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
         </div>
@@ -412,7 +285,7 @@ export default function TransactionDetailPage() {
 
   if (!transaction) {
     return (
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="text-center py-12">
           <p className="text-gray-500">Transaction not found</p>
           <Button onClick={() => router.push("/transactions")} className="mt-4">
@@ -423,10 +296,8 @@ export default function TransactionDetailPage() {
     );
   }
 
-  const emptyFields = getEmptyFields();
-
   return (
-    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header */}
       <div className="mb-6">
         <Button
@@ -440,26 +311,11 @@ export default function TransactionDetailPage() {
 
         <div className="flex items-start justify-between">
           <div>
-            <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-2xl font-bold text-gray-900 capitalize">
-                {transaction.type.replace(/_/g, " ")}
-              </h1>
-              <Badge variant="outline" className="text-sm">
-                {transaction.type}
-              </Badge>
-              {transaction.confidence && (
-                <Badge
-                  variant={parseFloat(transaction.confidence) >= 0.8 ? "default" : "secondary"}
-                  className="gap-1"
-                >
-                  <Percent className="h-3 w-3" />
-                  {(parseFloat(transaction.confidence) * 100).toFixed(0)}% confidence
-                </Badge>
-              )}
-            </div>
-            <p className="text-gray-500 font-mono text-sm">{transaction.id}</p>
+            <h1 className="text-2xl font-bold text-gray-900 capitalize">
+              {transaction.type.replace(/_/g, " ")}
+            </h1>
+            <p className="text-gray-500 font-mono text-sm mt-1">{transaction.id}</p>
           </div>
-
           {transaction.amount && (
             <div className="text-right">
               <div className="text-3xl font-bold text-gray-900">
@@ -475,370 +331,241 @@ export default function TransactionDetailPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left Column: Transaction Details */}
-        <div className="space-y-6">
-          {/* Core Details */}
-          {Object.entries(FIELD_GROUPS).map(([groupKey, group]) => {
-            const populatedFields = getPopulatedFields(group.fields);
-            if (populatedFields.length === 0) return null;
+      <div className="space-y-6">
+        {/* Section 1: Extracted Values */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">Extracted Values</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Populated Fields */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              {populatedFields.map(({ key, label }) => (
+                <div key={key} className="space-y-1">
+                  <dt className="text-sm text-gray-500">{label}</dt>
+                  <dd className="text-sm font-medium text-gray-900 capitalize">
+                    {formatValue(key, getFieldValue(key))}
+                  </dd>
+                </div>
+              ))}
+            </div>
 
-            return (
-              <Card key={groupKey}>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg">{group.label}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <dl className="grid grid-cols-2 gap-4">
-                    {populatedFields.map(field => (
-                      <div key={field} className="space-y-1">
-                        <dt className="text-sm text-gray-500">{FIELD_LABELS[field] || field}</dt>
-                        <dd className="text-sm font-medium text-gray-900">
-                          {formatValue(field, getFieldValue(field))}
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                </CardContent>
-              </Card>
-            );
-          })}
-
-          {/* Account Information */}
-          {(account || toAccount) && (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <Building2 className="h-5 w-5" />
-                  Account Information
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            {/* Account Info */}
+            {(account || toAccount) && (
+              <div className="pt-4 border-t grid grid-cols-1 md:grid-cols-2 gap-4">
                 {account && (
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-700 mb-2">From Account</h4>
-                    <div className="p-3 bg-gray-50 rounded-lg space-y-1">
-                      <p className="font-medium">{account.accountName || "Unnamed Account"}</p>
+                  <div className="space-y-1">
+                    <dt className="text-sm text-gray-500">Account</dt>
+                    <dd className="text-sm font-medium text-gray-900">
+                      {account.accountName || account.accountNumber || "Unknown"}
                       {account.institution && (
-                        <p className="text-sm text-gray-600">{account.institution}</p>
+                        <span className="text-gray-500 font-normal"> ({account.institution})</span>
                       )}
-                      {account.accountNumber && (
-                        <p className="text-sm text-gray-500 font-mono">
-                          {account.accountNumber}
-                        </p>
-                      )}
-                    </div>
+                    </dd>
                   </div>
                 )}
                 {toAccount && (
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-700 mb-2">To Account</h4>
-                    <div className="p-3 bg-gray-50 rounded-lg space-y-1">
-                      <p className="font-medium">{toAccount.accountName || "Unnamed Account"}</p>
+                  <div className="space-y-1">
+                    <dt className="text-sm text-gray-500">To Account</dt>
+                    <dd className="text-sm font-medium text-gray-900">
+                      {toAccount.accountName || toAccount.accountNumber || "Unknown"}
                       {toAccount.institution && (
-                        <p className="text-sm text-gray-600">{toAccount.institution}</p>
+                        <span className="text-gray-500 font-normal"> ({toAccount.institution})</span>
                       )}
-                      {toAccount.accountNumber && (
-                        <p className="text-sm text-gray-500 font-mono">
-                          {toAccount.accountNumber}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Additional Data */}
-          {(transaction.data || transaction.unclassifiedData) && (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg">Additional Data</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {transaction.data && Object.keys(transaction.data).length > 0 && (
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-700 mb-2">Structured Data</h4>
-                    <pre className="text-xs bg-gray-50 p-3 rounded-lg overflow-auto max-h-48">
-                      {JSON.stringify(transaction.data, null, 2)}
-                    </pre>
-                  </div>
-                )}
-                {transaction.unclassifiedData && Object.keys(transaction.unclassifiedData).length > 0 && (
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-700 mb-2">Unclassified Data</h4>
-                    <pre className="text-xs bg-amber-50 p-3 rounded-lg overflow-auto max-h-48">
-                      {JSON.stringify(transaction.unclassifiedData, null, 2)}
-                    </pre>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Empty Fields (Collapsible) */}
-          {emptyFields.length > 0 && (
-            <Collapsible open={emptyFieldsOpen} onOpenChange={setEmptyFieldsOpen}>
-              <Card>
-                <CollapsibleTrigger asChild>
-                  <CardHeader className="pb-3 cursor-pointer hover:bg-gray-50 transition-colors">
-                    <CardTitle className="text-lg flex items-center gap-2">
-                      {emptyFieldsOpen ? (
-                        <ChevronDown className="h-5 w-5" />
-                      ) : (
-                        <ChevronRight className="h-5 w-5" />
-                      )}
-                      Empty Fields
-                      <Badge variant="secondary" className="ml-2">
-                        {emptyFields.length}
-                      </Badge>
-                    </CardTitle>
-                  </CardHeader>
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <CardContent>
-                    <div className="flex flex-wrap gap-2">
-                      {emptyFields.map(field => (
-                        <Badge key={field} variant="outline" className="text-gray-400">
-                          {FIELD_LABELS[field] || field}
-                        </Badge>
-                      ))}
-                    </div>
-                  </CardContent>
-                </CollapsibleContent>
-              </Card>
-            </Collapsible>
-          )}
-
-          {/* Extraction Run Info */}
-          {extractionRun && (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <Cpu className="h-5 w-5" />
-                  Extraction Details
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <dl className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <dt className="text-gray-500">Run Version</dt>
-                    <dd className="font-medium">v{extractionRun.version}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-gray-500">Model</dt>
-                    <dd className="font-medium">{extractionRun.modelName || transaction.llmModel || "Unknown"}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-gray-500">Prompt</dt>
-                    <dd className="font-medium">{extractionRun.promptName || "Default"}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-gray-500">Extracted At</dt>
-                    <dd className="font-medium">
-                      {extractionRun.completedAt
-                        ? format(new Date(extractionRun.completedAt), "MMM d, yyyy h:mm a")
-                        : "In progress"
-                      }
                     </dd>
                   </div>
-                </dl>
-              </CardContent>
-            </Card>
-          )}
-        </div>
+                )}
+              </div>
+            )}
 
-        {/* Right Column: Email & Re-analyze */}
-        <div className="space-y-6">
-          {/* Source Email */}
-          {email ? (
-            <Card>
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <Mail className="h-5 w-5" />
-                    Source Email
-                  </CardTitle>
-                  <Link href={`/emails/${email.id}`}>
-                    <Button variant="ghost" size="sm" className="gap-1">
-                      <ExternalLink className="h-4 w-4" />
-                      View Full
-                    </Button>
-                  </Link>
-                </div>
-                <CardDescription>
-                  {email.subject || "No subject"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {/* Email Metadata */}
-                <div className="grid grid-cols-2 gap-3 text-sm p-3 bg-gray-50 rounded-lg">
-                  <div>
-                    <span className="text-gray-500">From:</span>{" "}
-                    <span className="font-medium">
-                      {email.senderName || email.sender || "Unknown"}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-gray-500">To:</span>{" "}
-                    <span className="font-medium">
-                      {email.recipientName || email.recipient || "Unknown"}
-                    </span>
-                  </div>
-                  {email.date && (
-                    <div className="col-span-2">
-                      <span className="text-gray-500">Date:</span>{" "}
-                      <span className="font-medium">
-                        {format(new Date(email.date), "MMMM d, yyyy h:mm a")}
-                      </span>
-                    </div>
+            {/* Additional Data */}
+            {transaction.data && Object.keys(transaction.data).length > 0 && (
+              <div className="pt-4 border-t">
+                <h4 className="text-sm text-gray-500 mb-2">Additional Data</h4>
+                <pre className="text-xs bg-gray-50 p-3 rounded-lg overflow-auto max-h-32">
+                  {JSON.stringify(transaction.data, null, 2)}
+                </pre>
+              </div>
+            )}
+
+            {/* Empty Fields (Collapsible) */}
+            {emptyFields.length > 0 && (
+              <Collapsible open={emptyFieldsOpen} onOpenChange={setEmptyFieldsOpen}>
+                <CollapsibleTrigger className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 pt-4 border-t w-full">
+                  {emptyFieldsOpen ? (
+                    <ChevronDown className="h-4 w-4" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4" />
                   )}
-                </div>
+                  <span>Empty Fields ({emptyFields.length})</span>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="pt-3">
+                  <div className="flex flex-wrap gap-2">
+                    {emptyFields.map(({ key, label }) => (
+                      <Badge key={key} variant="outline" className="text-gray-400 font-normal">
+                        {label}
+                      </Badge>
+                    ))}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+          </CardContent>
+        </Card>
 
-                {/* Email Content Tabs */}
-                <Tabs value={emailTab} onValueChange={setEmailTab}>
-                  <TabsList className="grid w-full grid-cols-4">
-                    <TabsTrigger value="rendered" className="gap-1">
-                      <FileText className="h-3 w-3" />
-                      Rendered
-                    </TabsTrigger>
-                    <TabsTrigger value="text" className="gap-1">
-                      <FileText className="h-3 w-3" />
-                      Text
-                    </TabsTrigger>
-                    <TabsTrigger value="html" className="gap-1">
-                      <Code className="h-3 w-3" />
-                      HTML
-                    </TabsTrigger>
-                    <TabsTrigger value="raw" className="gap-1">
-                      <Code className="h-3 w-3" />
-                      Raw
-                    </TabsTrigger>
-                  </TabsList>
-                  <TabsContent value={emailTab} className="mt-4">
-                    <div className="border rounded-lg overflow-hidden">
-                      {renderEmailContent()}
-                    </div>
-                  </TabsContent>
-                </Tabs>
-              </CardContent>
-            </Card>
-          ) : (
-            <Card>
-              <CardContent className="py-8 text-center text-gray-500">
-                <Mail className="h-12 w-12 mx-auto mb-3 opacity-20" />
-                <p>No source email linked to this transaction</p>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Re-analyze Section */}
-          {email && (
-            <Card>
-              <CardHeader className="pb-3">
+        {/* Section 2: Original Email */}
+        {email ? (
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
                 <CardTitle className="text-lg flex items-center gap-2">
-                  <RefreshCw className="h-5 w-5" />
-                  Re-analyze Email
+                  <Mail className="h-5 w-5" />
+                  Original Email
                 </CardTitle>
-                <CardDescription>
-                  Extract transactions again with a different prompt or model
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {/* Prompt Selection */}
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">
-                    Select Prompt
-                  </label>
-                  <Select
-                    value={selectedPromptId}
-                    onValueChange={(value) => {
-                      setSelectedPromptId(value);
-                      setUseCustomPrompt(false);
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Choose a prompt" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {prompts.map(prompt => (
-                        <SelectItem key={prompt.id} value={prompt.id}>
-                          <div className="flex items-center gap-2">
-                            <span>{prompt.name}</span>
-                            {prompt.isDefault && (
-                              <Badge variant="secondary" className="text-xs">Default</Badge>
-                            )}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                <Link href={`/emails/${email.id}`}>
+                  <Button variant="ghost" size="sm">
+                    View Full Email
+                  </Button>
+                </Link>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Email Metadata */}
+              <div className="grid grid-cols-2 gap-3 text-sm p-3 bg-gray-50 rounded-lg">
+                <div>
+                  <span className="text-gray-500">Subject:</span>{" "}
+                  <span className="font-medium">{email.subject || "No subject"}</span>
                 </div>
-
-                {/* Custom Prompt Toggle */}
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="useCustomPrompt"
-                    checked={useCustomPrompt}
-                    onChange={(e) => setUseCustomPrompt(e.target.checked)}
-                    className="rounded border-gray-300"
-                  />
-                  <label htmlFor="useCustomPrompt" className="text-sm text-gray-700 flex items-center gap-1">
-                    <Edit3 className="h-4 w-4" />
-                    Customize prompt
-                  </label>
+                <div>
+                  <span className="text-gray-500">From:</span>{" "}
+                  <span className="font-medium">{email.senderName || email.sender || "Unknown"}</span>
                 </div>
-
-                {/* Custom Prompt Editor */}
-                {useCustomPrompt && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-700">
-                      Custom Prompt Content
-                    </label>
-                    <Textarea
-                      value={customPrompt}
-                      onChange={(e) => setCustomPrompt(e.target.value)}
-                      rows={10}
-                      className="font-mono text-sm"
-                      placeholder="Enter your custom extraction prompt..."
-                    />
-                    <p className="text-xs text-gray-500">
-                      The email content will be appended to this prompt for extraction.
-                    </p>
+                {email.date && (
+                  <div className="col-span-2">
+                    <span className="text-gray-500">Date:</span>{" "}
+                    <span className="font-medium">
+                      {format(new Date(email.date), "MMMM d, yyyy h:mm a")}
+                    </span>
                   </div>
                 )}
+              </div>
 
-                {/* Re-analyze Button */}
-                <Button
-                  onClick={handleReanalyze}
-                  disabled={reanalyzing || !selectedPromptId}
-                  className="w-full gap-2"
-                >
-                  {reanalyzing ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Re-analyzing...
-                    </>
-                  ) : (
-                    <>
-                      <Send className="h-4 w-4" />
-                      Re-analyze Email
-                    </>
-                  )}
-                </Button>
+              {/* Email Content Tabs */}
+              <Tabs value={emailTab} onValueChange={setEmailTab}>
+                <TabsList className="grid w-full grid-cols-4">
+                  <TabsTrigger value="rendered" className="gap-1">
+                    <FileText className="h-3 w-3" />
+                    Rendered
+                  </TabsTrigger>
+                  <TabsTrigger value="text" className="gap-1">
+                    <FileText className="h-3 w-3" />
+                    Text
+                  </TabsTrigger>
+                  <TabsTrigger value="html" className="gap-1">
+                    <Code className="h-3 w-3" />
+                    HTML
+                  </TabsTrigger>
+                  <TabsTrigger value="raw" className="gap-1">
+                    <Code className="h-3 w-3" />
+                    Raw
+                  </TabsTrigger>
+                </TabsList>
+                <TabsContent value={emailTab} className="mt-4">
+                  <div className="border rounded-lg overflow-hidden">
+                    {renderEmailContent()}
+                  </div>
+                </TabsContent>
+              </Tabs>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="py-8 text-center text-gray-500">
+              <Mail className="h-12 w-12 mx-auto mb-3 opacity-20" />
+              <p>No source email linked to this transaction</p>
+            </CardContent>
+          </Card>
+        )}
 
-                <p className="text-xs text-gray-500 text-center">
-                  This will create a new extraction. View all extractions on the{" "}
-                  <Link href={`/emails/${email.id}`} className="text-blue-600 hover:underline">
-                    email detail page
-                  </Link>.
-                </p>
-              </CardContent>
-            </Card>
-          )}
-        </div>
+        {/* Section 3: Other Transactions from Same Email (Same Run) */}
+        {sameRunTransactions.length > 0 && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Layers className="h-5 w-5" />
+                Other Transactions from This Email
+                <Badge variant="secondary">{sameRunTransactions.length}</Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {sameRunTransactions.map((tx) => (
+                  <Link
+                    key={tx.id}
+                    href={`/transactions/${tx.id}`}
+                    className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Badge variant="outline" className="capitalize">
+                        {tx.type.replace(/_/g, " ")}
+                      </Badge>
+                      {tx.symbol && (
+                        <span className="font-mono text-sm">{tx.symbol}</span>
+                      )}
+                      {tx.date && (
+                        <span className="text-sm text-gray-500">
+                          {format(new Date(tx.date), "MMM d, yyyy")}
+                        </span>
+                      )}
+                    </div>
+                    <span className="font-medium">
+                      {formatTransactionAmount(tx)}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Section 4: Transactions from Different Runs */}
+        {otherRunTransactions.length > 0 && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <History className="h-5 w-5" />
+                Transactions from Other Extraction Runs
+                <Badge variant="secondary">{otherRunTransactions.length}</Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {otherRunTransactions.map(({ transaction: tx, runVersion, modelName, promptName }) => (
+                  <Link
+                    key={tx.id}
+                    href={`/transactions/${tx.id}`}
+                    className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Badge variant="outline" className="capitalize">
+                        {tx.type.replace(/_/g, " ")}
+                      </Badge>
+                      {tx.symbol && (
+                        <span className="font-mono text-sm">{tx.symbol}</span>
+                      )}
+                      <span className="text-xs text-gray-500">
+                        Run v{runVersion} • {modelName || "Unknown model"}
+                      </span>
+                    </div>
+                    <span className="font-medium">
+                      {formatTransactionAmount(tx)}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </main>
   );

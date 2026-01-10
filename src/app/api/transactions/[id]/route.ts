@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { transactions, emails, accounts, extractionRuns, aiModels, prompts } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and, ne } from "drizzle-orm";
 
 /**
- * GET /api/transactions/[id] - Get a single transaction with its source email and metadata
+ * GET /api/transactions/[id] - Get a single transaction with its source email, related transactions, and metadata
  */
 export async function GET(
   request: NextRequest,
@@ -55,6 +55,53 @@ export async function GET(
       }
     }
 
+    // Fetch other transactions from the same email in the same extraction run
+    let sameRunTransactions: typeof transactions.$inferSelect[] = [];
+    if (transaction.sourceEmailId && transaction.extractionRunId) {
+      sameRunTransactions = await db
+        .select()
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.sourceEmailId, transaction.sourceEmailId),
+            eq(transactions.extractionRunId, transaction.extractionRunId),
+            ne(transactions.id, id)
+          )
+        );
+    }
+
+    // Fetch transactions from the same email in different extraction runs
+    let otherRunTransactions: Array<{
+      transaction: typeof transactions.$inferSelect;
+      runVersion: number | null;
+      modelName: string | null;
+      promptName: string | null;
+      completedAt: Date | null;
+    }> = [];
+    if (transaction.sourceEmailId) {
+      const otherRuns = await db
+        .select({
+          transaction: transactions,
+          runVersion: extractionRuns.version,
+          modelName: aiModels.name,
+          promptName: prompts.name,
+          completedAt: extractionRuns.completedAt,
+        })
+        .from(transactions)
+        .leftJoin(extractionRuns, eq(transactions.extractionRunId, extractionRuns.id))
+        .leftJoin(aiModels, eq(extractionRuns.modelId, aiModels.id))
+        .leftJoin(prompts, eq(extractionRuns.promptId, prompts.id))
+        .where(
+          and(
+            eq(transactions.sourceEmailId, transaction.sourceEmailId),
+            transaction.extractionRunId
+              ? ne(transactions.extractionRunId, transaction.extractionRunId)
+              : ne(transactions.id, id)
+          )
+        );
+      otherRunTransactions = otherRuns;
+    }
+
     return NextResponse.json({
       transaction,
       email,
@@ -65,6 +112,8 @@ export async function GET(
         modelName: model?.name || null,
         promptName: prompt?.name || null,
       } : null,
+      sameRunTransactions,
+      otherRunTransactions,
     });
   } catch (error) {
     console.error("Error fetching transaction:", error);

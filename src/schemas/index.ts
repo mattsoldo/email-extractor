@@ -233,7 +233,20 @@ export const transactionExtractionJsonSchema = {
             }
           }
         },
-        "required": ["transactionType", "confidence"],
+        "required": [
+          "transactionType", "confidence", "transactionDate", "description", "amount", "currency", "category",
+          "accountNumber", "accountName", "institution",
+          "toAccountNumber", "toAccountName", "toInstitution",
+          "symbol", "securityName",
+          "quantity", "quantityExecuted", "quantityRemaining",
+          "price", "executionPrice", "priceType", "limitPrice",
+          "fees",
+          "optionType", "strikePrice", "expirationDate", "optionAction", "contractSize",
+          "orderId", "orderQuantity", "orderPrice", "orderType", "orderStatus", "timeInForce", "partiallyExecuted", "executionTime",
+          "referenceNumber",
+          "grantNumber", "vestDate",
+          "additionalFields"
+        ],
         "additionalProperties": false
       }
     },
@@ -242,7 +255,7 @@ export const transactionExtractionJsonSchema = {
       "description": "Any notes about the extraction, ambiguities, or why this email is non-transactional"
     }
   },
-  "required": ["isTransactional", "emailType", "transactions"]
+  "required": ["isTransactional", "emailType", "transactions", "extractionNotes"]
 } as const;
 
 // Type for the schema (for use with TypeScript)

@@ -245,6 +245,7 @@ export async function POST(request: NextRequest) {
                 .map(e => e.contentHash)
                 .filter((hash): hash is string => hash !== null)
             );
+            console.log(`[Upload] Found ${existingHashSet.size} existing emails out of ${allHashes.length} to upload`);
           } catch (hashError) {
             console.error("Error checking for duplicates:", hashError);
             // Continue without deduplication if check fails
@@ -264,6 +265,7 @@ export async function POST(request: NextRequest) {
         for (const { file, parsed, classification, contentHash } of emailsWithHashes) {
           if (existingHashSet.has(contentHash)) {
             results.duplicates++;
+            console.log(`[Upload] Skipping duplicate: ${file.filename} (hash: ${contentHash.slice(0, 8)}...)`);
             continue;
           }
 
@@ -336,10 +338,15 @@ export async function POST(request: NextRequest) {
           })
           .where(eq(emailSets.id, targetSetId));
 
+        // Log summary
+        console.log(`[Upload] Complete: ${results.uploaded} uploaded, ${results.duplicates} duplicates, ${results.failed} failed`);
+
         // Send final progress
         sendProgress({
           stage: "complete",
-          message: `Upload complete! ${results.uploaded} saved, ${results.duplicates} duplicates, ${results.failed} failed`,
+          message: results.duplicates > 0 && results.uploaded === 0
+            ? `All ${results.duplicates} emails already exist in database (duplicates)`
+            : `Upload complete! ${results.uploaded} saved, ${results.duplicates} duplicates, ${results.failed} failed`,
           current: emailsToInsert.length,
           total: emailsToInsert.length,
           details: results,

@@ -17,7 +17,7 @@ interface DiscoveredModel {
 // Known pricing for models (fallback when API doesn't provide it)
 const KNOWN_PRICING: Record<string, { input: number; output: number; context: number }> = {
   // Anthropic Claude 4.5 series
-  "claude-4-5-haiku-20250514": { input: 0.80, output: 4.00, context: 200000 },
+  "claude-haiku-4-5-20251001": { input: 1.00, output: 5.00, context: 200000 },
   // Anthropic Claude 4 series
   "claude-opus-4-20250514": { input: 15.00, output: 75.00, context: 200000 },
   "claude-sonnet-4-20250514": { input: 3.00, output: 15.00, context: 200000 },
@@ -256,7 +256,7 @@ function inferGeminiPricing(modelId: string): { input: number; output: number; c
 const KNOWN_ANTHROPIC_MODELS = [
   "claude-opus-4-20250514",
   "claude-sonnet-4-20250514",
-  "claude-4-5-haiku-20250514",
+  "claude-haiku-4-5-20251001",
   "claude-3-5-sonnet-20241022",
   "claude-3-5-haiku-20241022",
   "claude-3-opus-20240229",

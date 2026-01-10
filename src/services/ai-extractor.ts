@@ -31,8 +31,6 @@ const SingleTransactionSchema = z.object({
     .describe("The type of financial transaction"),
   confidence: z
     .number()
-    .min(0)
-    .max(1)
     .describe("Confidence score from 0 to 1"),
 
   // Date and amount
@@ -266,21 +264,82 @@ EMAIL CONTENT:
 ${emailContent}`;
 
     // Provider options for prompt caching
-    // - Anthropic: Explicit cache control marks system prompt cacheable for 5 minutes
+    // - Anthropic: Use prompt caching for efficiency
     // - OpenAI: Automatic server-side caching for identical prompts (no config needed)
     // - Google: Requires pre-created cachedContent (not implemented - more complex setup)
-    // The separated system/messages structure benefits all providers by keeping
-    // the constant system prompt separate from the variable email content.
-    const providerOptions = provider === "anthropic" ? {
+    const anthropicProviderOptions = {
       anthropic: {
         cacheControl: { type: "ephemeral" as const },
       },
-    } : undefined;
+    };
 
+    // Anthropic has a limit of 8 conditional branches in structured output schemas.
+    // Our schema has 46 branches (from nullish fields + enums), so we use text generation
+    // with JSON parsing for Anthropic instead of structured output.
+    if (provider === "anthropic") {
+      const jsonSystemPrompt = `${systemPrompt}
+
+IMPORTANT: You must respond with a valid JSON object matching this structure:
+{
+  "isTransactional": boolean,
+  "emailType": "transactional" | "informational" | "marketing" | "alert" | "statement" | "other",
+  "transactions": [
+    {
+      "transactionType": "dividend" | "interest" | "stock_trade" | "option_trade" | "wire_transfer_in" | "wire_transfer_out" | "funds_transfer" | "deposit" | "withdrawal" | "rsu_vest" | "rsu_release" | "account_transfer" | "fee" | "other",
+      "confidence": number (0-1),
+      "transactionDate": string | null,
+      "amount": number | null,
+      "currency": string,
+      "accountNumber": string | null,
+      "accountName": string | null,
+      "institution": string | null,
+      "toAccountNumber": string | null,
+      "toAccountName": string | null,
+      "toInstitution": string | null,
+      "symbol": string | null,
+      "securityName": string | null,
+      "quantity": number | null,
+      "price": number | null,
+      "optionType": "call" | "put" | null,
+      "strikePrice": number | null,
+      "expirationDate": string | null,
+      "optionAction": "buy_to_open" | "buy_to_close" | "sell_to_open" | "sell_to_close" | "assigned" | "expired" | "exercised" | null,
+      "orderType": "buy" | "sell" | "buy_to_cover" | "sell_short" | null,
+      "orderStatus": "executed" | "cancelled" | "partial" | "pending" | null,
+      "fees": number | null,
+      "referenceNumber": string | null,
+      "grantNumber": string | null,
+      "vestDate": string | null,
+      "additionalFields": [{"key": string, "value": string}]
+    }
+  ],
+  "extractionNotes": string | null
+}
+
+Respond ONLY with the JSON object, no additional text or markdown.`;
+
+      const { text } = await generateText({
+        model,
+        system: jsonSystemPrompt,
+        messages: [{ role: "user", content: userMessage }],
+        providerOptions: anthropicProviderOptions,
+      });
+
+      // Parse the JSON response
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        throw new Error("Failed to extract JSON from Anthropic response");
+      }
+
+      const result = JSON.parse(jsonMatch[0]) as TransactionExtraction;
+      console.log(`[AI Extractor] ✓ Extraction successful for email ${email.id}: ${result.isTransactional ? result.transactions?.length + " transaction(s)" : "non-transactional"} (Anthropic text mode)`);
+      return result;
+    }
+
+    // For OpenAI and Google, use structured output (no complexity limits)
     // Use custom JSON schema if provided, otherwise use default Zod schema
     if (customJsonSchema) {
       // Custom schema path - output type is unknown, cast to TransactionExtraction
-      // Callers using custom schemas should handle the different output structure
       const { output } = await generateText({
         model,
         system: systemPrompt,
@@ -290,20 +349,18 @@ ${emailContent}`;
           name: "transaction_extraction",
           description: "Extract data from email content",
         }),
-        providerOptions,
       });
 
       if (!output) {
         throw new Error("Failed to extract structured data from email");
       }
 
-      // Cast and log with transaction info (same as default schema path)
       const result = output as unknown as TransactionExtraction;
       console.log(`[AI Extractor] ✓ Extraction successful for email ${email.id}: ${result.isTransactional ? result.transactions?.length + " transaction(s)" : "non-transactional"} (custom schema)`);
       return result;
     }
 
-    // Default schema path - output is properly typed as TransactionExtraction
+    // Default schema path for OpenAI/Google - output is properly typed
     const { output } = await generateText({
       model,
       system: systemPrompt,
@@ -313,10 +370,8 @@ ${emailContent}`;
         name: "transaction_extraction",
         description: "Extract financial transactions from email content",
       }),
-      providerOptions,
     });
 
-    // output can be undefined if extraction fails, handle gracefully
     if (!output) {
       throw new Error("Failed to extract structured data from email");
     }

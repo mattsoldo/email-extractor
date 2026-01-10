@@ -7,7 +7,6 @@ import { extractTransaction, type TransactionExtraction, type SingleTransaction,
 import { normalizeTransaction, detectOrCreateAccount } from "./transaction-normalizer";
 import { estimateBatchCost, formatCost, getModelConfig } from "./model-config";
 import { SOFTWARE_VERSION } from "@/config/version";
-import { transactionExtractionJsonSchema } from "@/schemas";
 
 /**
  * Clean up stale "running" extraction runs left from server restarts
@@ -386,9 +385,9 @@ export async function startExtractionJob(
   const promptContentToUse = options.customPromptContent || prompt.content;
   const isCustomPrompt = !!options.customPromptContent && options.customPromptContent !== prompt.content;
 
-  // Use database schema if defined (for experimentation), otherwise use code default
+  // Only use custom JSON schema if explicitly defined in the prompt
+  // Otherwise, let extractTransaction use the default Zod schema (which is properly typed)
   const hasCustomSchema = !!prompt.jsonSchema;
-  const promptJsonSchema = prompt.jsonSchema || transactionExtractionJsonSchema;
 
   console.log(`[Job Manager] Using prompt: ${prompt.name} (${prompt.id})${isCustomPrompt ? " [CUSTOM CONTENT]" : ""}${hasCustomSchema ? " [CUSTOM SCHEMA]" : " [DEFAULT SCHEMA]"}`);
 
@@ -431,7 +430,8 @@ export async function startExtractionJob(
     },
   });
 
-  runExtractionJob(jobId, { ...options, promptContent: promptContentToUse, jsonSchema: promptJsonSchema }, abortController.signal);
+  // Only pass custom schema if defined, otherwise use default Zod schema in extractTransaction
+  runExtractionJob(jobId, { ...options, promptContent: promptContentToUse, jsonSchema: hasCustomSchema ? prompt.jsonSchema : null }, abortController.signal);
 
   return jobId;
 }

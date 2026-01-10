@@ -37,8 +37,6 @@ export const transactionExtractionJsonSchema = {
           },
           "confidence": {
             "type": "number",
-            "minimum": 0,
-            "maximum": 1,
             "description": "Confidence score from 0 to 1"
           },
           "transactionDate": {

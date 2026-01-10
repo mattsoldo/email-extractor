@@ -13,6 +13,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { format } from "date-fns";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -25,8 +35,9 @@ import {
   XCircle,
   Clock,
   FileText,
-  ArrowRight,
+  Trash2,
   ExternalLink,
+  AlertTriangle,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -76,12 +87,22 @@ interface Summary {
   totalEmails: number;
 }
 
+interface DeleteInfo {
+  runId: string;
+  runName: string;
+  transactionCount: number;
+  requiresConfirmation: boolean;
+  message: string;
+}
+
 export default function RunsPage() {
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
+  const [deleteInfo, setDeleteInfo] = useState<DeleteInfo | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchRuns = useCallback(async () => {
     setLoading(true);
@@ -161,6 +182,50 @@ export default function RunsPage() {
       style: "currency",
       currency: "USD",
     }).format(num);
+  };
+
+  const handleDeleteClick = async (runId: string) => {
+    try {
+      // First, get the deletion info without confirming
+      const res = await fetch(`/api/runs/${runId}`, { method: "DELETE" });
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Failed to prepare deletion");
+        return;
+      }
+
+      setDeleteInfo(data);
+    } catch (error) {
+      console.error("Failed to get deletion info:", error);
+      alert("Failed to prepare deletion");
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteInfo) return;
+
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/runs/${deleteInfo.runId}?confirm=true`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Failed to delete run");
+        return;
+      }
+
+      // Refresh the list
+      fetchRuns();
+      setDeleteInfo(null);
+    } catch (error) {
+      console.error("Failed to delete run:", error);
+      alert("Failed to delete run");
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -341,6 +406,15 @@ export default function RunsPage() {
                                 </Button>
                               </Link>
                             )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeleteClick(run.id)}
+                              disabled={isRunning}
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -385,6 +459,43 @@ export default function RunsPage() {
             </div>
           </div>
         )}
+
+        {/* Delete Confirmation Dialog */}
+        <AlertDialog open={!!deleteInfo} onOpenChange={() => setDeleteInfo(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle className="flex items-center gap-2">
+                {deleteInfo?.requiresConfirmation && (
+                  <AlertTriangle className="h-5 w-5 text-amber-500" />
+                )}
+                Delete Extraction Run
+              </AlertDialogTitle>
+              <AlertDialogDescription className="space-y-2">
+                <p>
+                  Are you sure you want to delete <strong>{deleteInfo?.runName}</strong>?
+                </p>
+                <p className={deleteInfo?.requiresConfirmation ? "text-amber-600 font-medium" : ""}>
+                  {deleteInfo?.message}
+                </p>
+                {deleteInfo?.requiresConfirmation && (
+                  <p className="text-red-600 text-sm">
+                    This action cannot be undone.
+                  </p>
+                )}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="bg-red-600 hover:bg-red-700"
+              >
+                {deleting ? "Deleting..." : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </main>
     </div>
   );

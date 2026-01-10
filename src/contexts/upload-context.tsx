@@ -5,10 +5,11 @@ import React, { createContext, useContext, useState, useRef, useCallback } from 
 interface UploadResult {
   uploaded: number;
   skipped: number;
+  duplicates: number;
   failed: number;
   details: Array<{
     filename: string;
-    status: "uploaded" | "skipped" | "failed";
+    status: "uploaded" | "skipped" | "duplicate" | "failed";
     reason?: string;
   }>;
 }
@@ -133,9 +134,10 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
 
               if (event.details) {
                 setUploadResult({
-                  uploaded: event.details.uploaded,
-                  skipped: event.details.skipped + (event.details.duplicates || 0),
-                  failed: event.details.failed,
+                  uploaded: event.details.uploaded || 0,
+                  skipped: event.details.skipped || 0,
+                  duplicates: event.details.duplicates || 0,
+                  failed: event.details.failed || 0,
                   details: [],
                 });
               }
@@ -144,7 +146,8 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
                 setCurrentUploadSetId(null);
                 setUploadResult({
                   uploaded: event.details?.uploaded || 0,
-                  skipped: (event.details?.skipped || 0) + (event.details?.duplicates || 0),
+                  skipped: event.details?.skipped || 0,
+                  duplicates: event.details?.duplicates || 0,
                   failed: event.details?.failed || 0,
                   details: [],
                 });

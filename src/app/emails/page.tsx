@@ -48,6 +48,7 @@ import {
   FolderOpen,
   Loader2,
   Trash2,
+  Copy,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 
@@ -853,20 +854,52 @@ function EmailsContent() {
               {/* Upload Results */}
               {uploadResult && (
                 <div className="space-y-3">
-                  <div className="flex gap-4 text-sm">
-                    <div className="flex items-center gap-1 text-green-600">
-                      <CheckCircle className="h-4 w-4" />
-                      {uploadResult.uploaded} uploaded
-                    </div>
-                    <div className="flex items-center gap-1 text-yellow-600">
-                      <Ban className="h-4 w-4" />
-                      {uploadResult.skipped} skipped
-                    </div>
-                    <div className="flex items-center gap-1 text-red-600">
-                      <XCircle className="h-4 w-4" />
-                      {uploadResult.failed} failed
-                    </div>
+                  {/* Summary counts */}
+                  <div className="flex flex-wrap gap-3 text-sm">
+                    {uploadResult.uploaded > 0 && (
+                      <div className="flex items-center gap-1 text-green-600">
+                        <CheckCircle className="h-4 w-4" />
+                        {uploadResult.uploaded} uploaded
+                      </div>
+                    )}
+                    {uploadResult.duplicates > 0 && (
+                      <div className="flex items-center gap-1 text-blue-600">
+                        <Copy className="h-4 w-4" />
+                        {uploadResult.duplicates} duplicates
+                      </div>
+                    )}
+                    {uploadResult.skipped > 0 && (
+                      <div className="flex items-center gap-1 text-yellow-600">
+                        <Ban className="h-4 w-4" />
+                        {uploadResult.skipped} skipped
+                      </div>
+                    )}
+                    {uploadResult.failed > 0 && (
+                      <div className="flex items-center gap-1 text-red-600">
+                        <XCircle className="h-4 w-4" />
+                        {uploadResult.failed} failed
+                      </div>
+                    )}
                   </div>
+
+                  {/* Helpful message for duplicates */}
+                  {uploadResult.duplicates > 0 && uploadResult.uploaded === 0 && (
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
+                      <p className="font-medium mb-1">All emails already exist</p>
+                      <p className="text-blue-600">
+                        These emails were previously uploaded. To re-import them,
+                        delete the existing email set first, then upload again.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Mixed results message */}
+                  {uploadResult.duplicates > 0 && uploadResult.uploaded > 0 && (
+                    <div className="p-2 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700">
+                      {uploadResult.duplicates} email{uploadResult.duplicates === 1 ? " was" : "s were"} already
+                      in the database and skipped to avoid duplicates.
+                    </div>
+                  )}
 
                   {uploadResult.details.length > 0 && (
                     <ScrollArea className="h-[150px] border rounded-lg">
@@ -883,6 +916,11 @@ function EmailsContent() {
                               {detail.status === "uploaded" && (
                                 <Badge className="bg-green-100 text-green-800">
                                   Uploaded
+                                </Badge>
+                              )}
+                              {detail.status === "duplicate" && (
+                                <Badge className="bg-blue-100 text-blue-800">
+                                  Already exists
                                 </Badge>
                               )}
                               {detail.status === "skipped" && (

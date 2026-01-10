@@ -265,8 +265,12 @@ EMAIL SENDER: ${email.sender || "(unknown)"}
 EMAIL CONTENT:
 ${emailContent}`;
 
-    // Provider options for prompt caching (Anthropic-specific)
-    // The cache control marks the system prompt as cacheable for 5 minutes
+    // Provider options for prompt caching
+    // - Anthropic: Explicit cache control marks system prompt cacheable for 5 minutes
+    // - OpenAI: Automatic server-side caching for identical prompts (no config needed)
+    // - Google: Requires pre-created cachedContent (not implemented - more complex setup)
+    // The separated system/messages structure benefits all providers by keeping
+    // the constant system prompt separate from the variable email content.
     const providerOptions = provider === "anthropic" ? {
       anthropic: {
         cacheControl: { type: "ephemeral" as const },

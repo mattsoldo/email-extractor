@@ -16,6 +16,8 @@ interface DiscoveredModel {
 
 // Known pricing for models (fallback when API doesn't provide it)
 const KNOWN_PRICING: Record<string, { input: number; output: number; context: number }> = {
+  // Anthropic Claude 4.5 series
+  "claude-4-5-haiku-20250514": { input: 0.80, output: 4.00, context: 200000 },
   // Anthropic Claude 4 series
   "claude-opus-4-20250514": { input: 15.00, output: 75.00, context: 200000 },
   "claude-sonnet-4-20250514": { input: 3.00, output: 15.00, context: 200000 },
@@ -53,6 +55,8 @@ const KNOWN_PRICING: Record<string, { input: number; output: number; context: nu
   "o3": { input: 10.00, output: 40.00, context: 200000 },
   "o3-mini": { input: 1.10, output: 4.40, context: 200000 },
   "o3-mini-2025-01-31": { input: 1.10, output: 4.40, context: 200000 },
+  // OpenAI o4 reasoning (estimated)
+  "o4-mini": { input: 1.10, output: 4.40, context: 200000 },
   // OpenAI GPT-4.5
   "gpt-4.5-preview": { input: 75.00, output: 150.00, context: 128000 },
   "gpt-4.5-preview-2025-02-27": { input: 75.00, output: 150.00, context: 128000 },
@@ -94,25 +98,21 @@ function inferAnthropicPricing(modelId: string): { input: number; output: number
 
   if (lowerModel.includes("opus")) {
     // Opus models are the most capable and expensive
-    if (lowerModel.includes("claude-4") || lowerModel.includes("claude-opus-4")) {
-      return { input: 15.00, output: 75.00, context: 200000 };
-    }
     return { input: 15.00, output: 75.00, context: 200000 };
   }
 
   if (lowerModel.includes("sonnet")) {
     // Sonnet models are mid-tier
-    if (lowerModel.includes("claude-4") || lowerModel.includes("claude-sonnet-4")) {
-      return { input: 3.00, output: 15.00, context: 200000 };
-    }
-    if (lowerModel.includes("3-5") || lowerModel.includes("3.5")) {
-      return { input: 3.00, output: 15.00, context: 200000 };
-    }
     return { input: 3.00, output: 15.00, context: 200000 };
   }
 
   if (lowerModel.includes("haiku")) {
     // Haiku models are the cheapest/fastest
+    // Claude 4.5 Haiku
+    if (lowerModel.includes("4-5") || lowerModel.includes("4.5")) {
+      return { input: 0.80, output: 4.00, context: 200000 };
+    }
+    // Claude 3.5 Haiku
     if (lowerModel.includes("3-5") || lowerModel.includes("3.5")) {
       return { input: 1.00, output: 5.00, context: 200000 };
     }
@@ -135,6 +135,14 @@ function inferOpenAIPricing(modelId: string): { input: number; output: number; c
   // GPT-4.5 (most expensive)
   if (lowerModel.includes("gpt-4.5")) {
     return { input: 75.00, output: 150.00, context: 128000 };
+  }
+
+  // o4 reasoning models (future)
+  if (lowerModel.startsWith("o4")) {
+    if (lowerModel.includes("mini")) {
+      return { input: 1.10, output: 4.40, context: 200000 };
+    }
+    return { input: 10.00, output: 40.00, context: 200000 };
   }
 
   // o3 reasoning models
@@ -243,38 +251,101 @@ function inferGeminiPricing(modelId: string): { input: number; output: number; c
   return { input: 0.10, output: 0.40, context: 1000000 };
 }
 
+// Known models that should always be available for discovery
+// These are models we know exist but might not appear in API listings
+const KNOWN_ANTHROPIC_MODELS = [
+  "claude-opus-4-20250514",
+  "claude-sonnet-4-20250514",
+  "claude-4-5-haiku-20250514",
+  "claude-3-5-sonnet-20241022",
+  "claude-3-5-haiku-20241022",
+  "claude-3-opus-20240229",
+  "claude-3-sonnet-20240229",
+  "claude-3-haiku-20240307",
+];
+
+const KNOWN_OPENAI_MODELS = [
+  "gpt-4o",
+  "gpt-4o-mini",
+  "gpt-4o-2024-11-20",
+  "gpt-4-turbo",
+  "gpt-4.5-preview",
+  "o1",
+  "o1-mini",
+  "o1-preview",
+  "o3",
+  "o3-mini",
+  "o4-mini",
+];
+
+const KNOWN_GEMINI_MODELS = [
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-2.0-pro",
+  "gemini-1.5-pro",
+  "gemini-1.5-flash",
+];
+
 // Fetch models from OpenAI API
 async function fetchOpenAIModels(apiKey: string): Promise<DiscoveredModel[]> {
+  const models: DiscoveredModel[] = [];
+  const seenIds = new Set<string>();
+
   try {
     const response = await fetch("https://api.openai.com/v1/models", {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
 
-    if (!response.ok) {
-      console.error("OpenAI API error:", response.status);
-      return [];
-    }
+    if (response.ok) {
+      const data = await response.json();
 
-    const data = await response.json();
-    const models: DiscoveredModel[] = [];
+      // Expanded prefixes to catch more models including future ones
+      const relevantPrefixes = ["gpt-4", "gpt-5", "gpt-6", "o1", "o2", "o3", "o4", "o5", "chatgpt"];
+      // Also match by pattern for reasoning models
+      const relevantPatterns = [/^o\d+/, /^gpt-\d/];
 
-    // Filter for relevant models (GPT-4, o1, o3, etc.)
-    const relevantPrefixes = ["gpt-4", "gpt-5", "o1", "o3", "chatgpt"];
+      for (const model of data.data || []) {
+        const id = model.id;
 
-    for (const model of data.data || []) {
-      const id = model.id;
+        // Skip fine-tuned, audio, and utility models
+        if (id.includes(":ft-") || id.includes("-audio") || id.includes("realtime") ||
+            id.includes("tts") || id.includes("whisper") || id.includes("dall-e") ||
+            id.includes("embedding") || id.includes("babbage") || id.includes("davinci") ||
+            id.includes("curie") || id.includes("ada") || id.includes("moderation")) {
+          continue;
+        }
 
-      // Skip fine-tuned, snapshot, and audio models
-      if (id.includes(":ft-") || id.includes("-audio") || id.includes("realtime") || id.includes("tts") || id.includes("whisper") || id.includes("dall-e") || id.includes("embedding")) {
-        continue;
+        // Check if it's a relevant model by prefix or pattern
+        const isRelevant = relevantPrefixes.some(prefix => id.startsWith(prefix)) ||
+                          relevantPatterns.some(pattern => pattern.test(id));
+        if (!isRelevant) continue;
+
+        seenIds.add(id);
+        const pricing = inferOpenAIPricing(id);
+
+        models.push({
+          id,
+          provider: "openai",
+          name: formatModelName(id, "openai"),
+          description: `OpenAI ${formatModelName(id, "openai")} model`,
+          inputCostPerMillion: pricing.input,
+          outputCostPerMillion: pricing.output,
+          contextWindow: pricing.context,
+          source: "OpenAI API",
+        });
       }
+    } else {
+      console.error("OpenAI API error:", response.status);
+    }
+  } catch (error) {
+    console.error("Failed to fetch OpenAI models:", error);
+  }
 
-      // Check if it's a relevant model
-      const isRelevant = relevantPrefixes.some(prefix => id.startsWith(prefix));
-      if (!isRelevant) continue;
-
+  // Add known models that weren't returned by the API
+  for (const id of KNOWN_OPENAI_MODELS) {
+    if (!seenIds.has(id)) {
       const pricing = inferOpenAIPricing(id);
-
       models.push({
         id,
         provider: "openai",
@@ -283,109 +354,175 @@ async function fetchOpenAIModels(apiKey: string): Promise<DiscoveredModel[]> {
         inputCostPerMillion: pricing.input,
         outputCostPerMillion: pricing.output,
         contextWindow: pricing.context,
-        source: "OpenAI API",
+        source: "Known Model",
       });
     }
-
-    return models;
-  } catch (error) {
-    console.error("Failed to fetch OpenAI models:", error);
-    return [];
   }
+
+  return models;
 }
 
-// Fetch models from Anthropic API
+// Fetch models from Anthropic API with pagination support
 async function fetchAnthropicModels(apiKey: string): Promise<DiscoveredModel[]> {
+  const models: DiscoveredModel[] = [];
+  const seenIds = new Set<string>();
+
   try {
-    const response = await fetch("https://api.anthropic.com/v1/models", {
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-    });
+    let hasMore = true;
+    let afterId: string | undefined;
 
-    if (!response.ok) {
-      console.error("Anthropic API error:", response.status);
-      return [];
+    while (hasMore) {
+      const url = new URL("https://api.anthropic.com/v1/models");
+      url.searchParams.set("limit", "100");
+      if (afterId) {
+        url.searchParams.set("after_id", afterId);
+      }
+
+      const response = await fetch(url.toString(), {
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2024-10-22",
+        },
+      });
+
+      if (!response.ok) {
+        console.error("Anthropic API error:", response.status);
+        break;
+      }
+
+      const data = await response.json();
+      const modelList = data.data || [];
+
+      for (const model of modelList) {
+        const id = model.id;
+
+        // Skip if not a claude model
+        if (!id.startsWith("claude")) continue;
+
+        seenIds.add(id);
+        const pricing = inferAnthropicPricing(id);
+
+        models.push({
+          id,
+          provider: "anthropic",
+          name: formatModelName(id, "anthropic"),
+          description: model.display_name || `Anthropic ${formatModelName(id, "anthropic")} model`,
+          inputCostPerMillion: pricing.input,
+          outputCostPerMillion: pricing.output,
+          contextWindow: pricing.context,
+          source: "Anthropic API",
+        });
+      }
+
+      // Check for more pages
+      hasMore = data.has_more === true;
+      if (hasMore && modelList.length > 0) {
+        afterId = modelList[modelList.length - 1].id;
+      } else {
+        hasMore = false;
+      }
     }
+  } catch (error) {
+    console.error("Failed to fetch Anthropic models:", error);
+  }
 
-    const data = await response.json();
-    const models: DiscoveredModel[] = [];
-
-    for (const model of data.data || []) {
-      const id = model.id;
-
-      // Skip if not a claude model
-      if (!id.startsWith("claude")) continue;
-
+  // Add known models that weren't returned by the API
+  for (const id of KNOWN_ANTHROPIC_MODELS) {
+    if (!seenIds.has(id)) {
       const pricing = inferAnthropicPricing(id);
-
       models.push({
         id,
         provider: "anthropic",
         name: formatModelName(id, "anthropic"),
-        description: model.display_name || `Anthropic ${formatModelName(id, "anthropic")} model`,
+        description: `Anthropic ${formatModelName(id, "anthropic")} model`,
         inputCostPerMillion: pricing.input,
         outputCostPerMillion: pricing.output,
         contextWindow: pricing.context,
-        source: "Anthropic API",
+        source: "Known Model",
       });
     }
-
-    return models;
-  } catch (error) {
-    console.error("Failed to fetch Anthropic models:", error);
-    return [];
   }
+
+  return models;
 }
 
-// Fetch models from Google Gemini API
+// Fetch models from Google Gemini API with pagination support
 async function fetchGeminiModels(apiKey: string): Promise<DiscoveredModel[]> {
+  const models: DiscoveredModel[] = [];
+  const seenIds = new Set<string>();
+
   try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
-    );
+    let pageToken: string | undefined;
 
-    if (!response.ok) {
-      console.error("Gemini API error:", response.status);
-      return [];
-    }
-
-    const data = await response.json();
-    const models: DiscoveredModel[] = [];
-
-    for (const model of data.models || []) {
-      // Model name is like "models/gemini-1.5-pro"
-      const fullName = model.name || "";
-      const id = fullName.replace("models/", "");
-
-      // Skip non-gemini models or embedding models
-      if (!id.startsWith("gemini") || id.includes("embedding") || id.includes("aqa")) {
-        continue;
+    do {
+      const url = new URL("https://generativelanguage.googleapis.com/v1beta/models");
+      url.searchParams.set("key", apiKey);
+      url.searchParams.set("pageSize", "100");
+      if (pageToken) {
+        url.searchParams.set("pageToken", pageToken);
       }
 
+      const response = await fetch(url.toString());
+
+      if (!response.ok) {
+        console.error("Gemini API error:", response.status);
+        break;
+      }
+
+      const data = await response.json();
+
+      for (const model of data.models || []) {
+        // Model name is like "models/gemini-1.5-pro"
+        const fullName = model.name || "";
+        const id = fullName.replace("models/", "");
+
+        // Skip non-gemini models or embedding models
+        if (!id.startsWith("gemini") || id.includes("embedding") || id.includes("aqa")) {
+          continue;
+        }
+
+        seenIds.add(id);
+        const pricing = inferGeminiPricing(id);
+
+        // Get context window from API if available
+        const contextWindow = model.inputTokenLimit || pricing.context;
+
+        models.push({
+          id,
+          provider: "google",
+          name: model.displayName || formatModelName(id, "google"),
+          description: model.description || `Google ${formatModelName(id, "google")} model`,
+          inputCostPerMillion: pricing.input,
+          outputCostPerMillion: pricing.output,
+          contextWindow,
+          source: "Google AI API",
+        });
+      }
+
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+  } catch (error) {
+    console.error("Failed to fetch Gemini models:", error);
+  }
+
+  // Add known models that weren't returned by the API
+  for (const id of KNOWN_GEMINI_MODELS) {
+    if (!seenIds.has(id)) {
       const pricing = inferGeminiPricing(id);
-
-      // Get context window from API if available
-      const contextWindow = model.inputTokenLimit || pricing.context;
-
       models.push({
         id,
         provider: "google",
-        name: model.displayName || formatModelName(id, "google"),
-        description: model.description || `Google ${formatModelName(id, "google")} model`,
+        name: formatModelName(id, "google"),
+        description: `Google ${formatModelName(id, "google")} model`,
         inputCostPerMillion: pricing.input,
         outputCostPerMillion: pricing.output,
-        contextWindow,
-        source: "Google AI API",
+        contextWindow: pricing.context,
+        source: "Known Model",
       });
     }
-
-    return models;
-  } catch (error) {
-    console.error("Failed to fetch Gemini models:", error);
-    return [];
   }
+
+  return models;
 }
 
 // Format model ID into a readable name

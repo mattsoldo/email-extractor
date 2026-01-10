@@ -310,40 +310,6 @@ async function runEmailScanJob(
 }
 
 /**
- * Check if an extraction already exists for this set+model+version+prompt combination
- */
-export async function checkExistingExtraction(
-  setId: string,
-  modelId: string,
-  promptId: string
-): Promise<{ exists: boolean; run?: typeof extractionRuns.$inferSelect }> {
-  const existing = await db
-    .select()
-    .from(extractionRuns)
-    .where(
-      and(
-        eq(extractionRuns.setId, setId),
-        eq(extractionRuns.modelId, modelId),
-        eq(extractionRuns.softwareVersion, SOFTWARE_VERSION),
-        eq(extractionRuns.promptId, promptId),
-        eq(extractionRuns.status, "completed")
-      )
-    )
-    .limit(1);
-
-  // Only consider a run as "existing" if it actually processed emails successfully
-  // A run that completed with 0 emails processed (e.g., due to errors or server restart)
-  // should not block new runs
-  const run = existing[0];
-  const hasResults = run && ((run.emailsProcessed ?? 0) > 0 || (run.transactionsCreated ?? 0) > 0);
-
-  return {
-    exists: hasResults,
-    run: hasResults ? run : undefined,
-  };
-}
-
-/**
  * Start AI extraction job
  * Processes emails from a specific set through the AI extractor
  * Results are atomic - transactions are only created if the entire run succeeds
@@ -391,15 +357,6 @@ export async function startExtractionJob(
   const hasCustomSchema = !!prompt.jsonSchema;
 
   console.log(`[Job Manager] Using prompt: ${prompt.name} (${prompt.id})${isCustomPrompt ? " [CUSTOM CONTENT]" : ""}${hasCustomSchema ? " [CUSTOM SCHEMA]" : " [DEFAULT SCHEMA]"}`);
-
-  // Check if this combination already exists (same set, model, version, AND prompt)
-  const { exists, run } = await checkExistingExtraction(options.setId, modelId, options.promptId);
-  if (exists) {
-    throw new Error(
-      `Extraction already exists for this set with ${modelId}, software v${SOFTWARE_VERSION}, and prompt "${prompt.name}". ` +
-      `Run ID: ${run?.id}. Use a different prompt or model to create a new run.`
-    );
-  }
 
   const jobId = uuid();
   const abortController = new AbortController();

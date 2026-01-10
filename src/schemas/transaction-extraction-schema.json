@@ -226,11 +226,13 @@
                   "description": "Field value as string"
                 }
               },
-              "required": ["key", "value"]
+              "required": ["key", "value"],
+              "additionalProperties": false
             }
           }
         },
-        "required": ["transactionType", "confidence"]
+        "required": ["transactionType", "confidence"],
+        "additionalProperties": false
       }
     },
     "extractionNotes": {
@@ -238,5 +240,6 @@
       "description": "Any notes about the extraction, ambiguities, or why this email is non-transactional"
     }
   },
-  "required": ["isTransactional", "emailType", "transactions"]
+  "required": ["isTransactional", "emailType", "transactions"],
+  "additionalProperties": false
 }

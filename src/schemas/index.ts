@@ -1,11 +1,13 @@
 /**
  * JSON Schema for transaction extraction
  * Matches the expanded transactions table schema
+ * Note: additionalProperties: false is required for OpenAI structured output
  */
 export const transactionExtractionJsonSchema = {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "description": "Schema for extracting financial transaction data from emails",
+  "additionalProperties": false,
   "properties": {
     "isTransactional": {
       "type": "boolean",
@@ -226,11 +228,13 @@ export const transactionExtractionJsonSchema = {
                 "key": { "type": "string", "description": "Field name" },
                 "value": { "type": "string", "description": "Field value as string" }
               },
-              "required": ["key", "value"]
+              "required": ["key", "value"],
+              "additionalProperties": false
             }
           }
         },
-        "required": ["transactionType", "confidence"]
+        "required": ["transactionType", "confidence"],
+        "additionalProperties": false
       }
     },
     "extractionNotes": {

@@ -9,6 +9,7 @@ import { getModelConfig, DEFAULT_MODEL_ID, type ModelConfig, type ModelProvider 
 
 // Schema for a single transaction
 // Using .nullish() instead of .nullable() to allow fields to be omitted (OpenAI) or set to null (Claude)
+// Using .strict() to add additionalProperties: false (required by OpenAI structured output)
 const SingleTransactionSchema = z.object({
   transactionType: z
     .enum([
@@ -123,13 +124,14 @@ const SingleTransactionSchema = z.object({
     .array(z.object({
       key: z.string().describe("Field name"),
       value: z.string().describe("Field value as string"),
-    }))
+    }).strict())
     .optional()
     .default([])
     .describe("Any other relevant fields extracted from the email as key-value pairs"),
-});
+}).strict();
 
 // Schema for the full email extraction result
+// Using .strict() to add additionalProperties: false (required by OpenAI structured output)
 export const TransactionExtractionSchema = z.object({
   isTransactional: z.boolean().describe("Whether this email contains any financial transactions"),
   emailType: z
@@ -142,7 +144,7 @@ export const TransactionExtractionSchema = z.object({
     .string()
     .nullable()
     .describe("Any notes about the extraction, ambiguities, or why this email is non-transactional"),
-});
+}).strict();
 
 export type SingleTransaction = z.infer<typeof SingleTransactionSchema>;
 export type TransactionExtraction = z.infer<typeof TransactionExtractionSchema>;

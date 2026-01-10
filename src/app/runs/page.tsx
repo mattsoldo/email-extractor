@@ -111,8 +111,11 @@ export default function RunsPage() {
     runNames: string[];
   } | null>(null);
 
-  const fetchRuns = useCallback(async () => {
-    setLoading(true);
+  // Fetch runs - only show loading spinner on initial load, not on refreshes
+  const fetchRuns = useCallback(async (isInitialLoad = false) => {
+    if (isInitialLoad) {
+      setLoading(true);
+    }
     try {
       const params = new URLSearchParams({
         page: String(page),
@@ -128,21 +131,24 @@ export default function RunsPage() {
     } catch (error) {
       console.error("Failed to fetch runs:", error);
     } finally {
-      setLoading(false);
+      if (isInitialLoad) {
+        setLoading(false);
+      }
     }
   }, [page]);
 
+  // Initial load and page changes
   useEffect(() => {
-    fetchRuns();
+    fetchRuns(true);
   }, [fetchRuns]);
 
-  // Poll for updates when there are running jobs
+  // Poll for updates when there are running jobs (no loading state)
   useEffect(() => {
     const hasRunningJobs = runs.some((run) => run.status === "running");
     if (!hasRunningJobs) return;
 
     const interval = setInterval(() => {
-      fetchRuns();
+      fetchRuns(false); // Silent refresh - no loading spinner
     }, 2000);
 
     return () => clearInterval(interval);
@@ -355,7 +361,7 @@ export default function RunsPage() {
                 Delete {selectedRuns.size} Run{selectedRuns.size > 1 ? "s" : ""}
               </Button>
             )}
-            <Button onClick={fetchRuns} variant="outline" className="gap-2">
+            <Button onClick={() => fetchRuns()} variant="outline" className="gap-2">
               <RefreshCw className="h-4 w-4" />
               Refresh
             </Button>

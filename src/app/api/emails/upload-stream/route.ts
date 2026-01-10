@@ -240,7 +240,11 @@ export async function POST(request: NextRequest) {
               .select({ contentHash: emails.contentHash })
               .from(emails)
               .where(inArray(emails.contentHash, allHashes));
-            existingHashSet = new Set(existingHashes.map(e => e.contentHash));
+            existingHashSet = new Set(
+              existingHashes
+                .map(e => e.contentHash)
+                .filter((hash): hash is string => hash !== null)
+            );
           } catch (hashError) {
             console.error("Error checking for duplicates:", hashError);
             // Continue without deduplication if check fails

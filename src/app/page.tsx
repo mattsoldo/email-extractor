@@ -721,7 +721,9 @@ export default function DashboardPage() {
                 <div className="flex items-center gap-2 p-2 bg-amber-50 rounded-lg border border-amber-200">
                   <Ban className="h-4 w-4 text-amber-600" />
                   <div className="text-sm">
-                    <span className="font-medium text-amber-800">Already Extracted</span>
+                    <span className="font-medium text-amber-800">
+                      {eligibility.reason === "no_emails" ? "No Emails" : "Not Available"}
+                    </span>
                   </div>
                 </div>
               )}

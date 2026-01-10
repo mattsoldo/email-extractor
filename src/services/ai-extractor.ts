@@ -39,7 +39,7 @@ const SingleTransactionSchema = z.object({
     .nullable()
     .describe("Transaction date in ISO format (YYYY-MM-DD)"),
   amount: z.number().nullable().describe("Transaction amount in dollars"),
-  currency: z.string().default("USD").describe("Currency code"),
+  currency: z.string().nullable().describe("Currency code (defaults to USD if null)"),
 
   // Account information
   accountNumber: z
@@ -123,8 +123,7 @@ const SingleTransactionSchema = z.object({
       key: z.string().describe("Field name"),
       value: z.string().describe("Field value as string"),
     }).strict())
-    .default([])
-    .describe("Any other relevant fields extracted from the email as key-value pairs"),
+    .describe("Any other relevant fields extracted from the email as key-value pairs (empty array if none)"),
 }).strict();
 
 // Schema for the full email extraction result

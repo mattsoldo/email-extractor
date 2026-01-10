@@ -497,7 +497,7 @@ async function runExtractionJob(
       .set({ totalItems: emailsToProcess.length })
       .where(eq(jobs.id, jobId));
 
-    const concurrency = options.concurrency || 3;
+    const concurrency = options.concurrency || 8;
 
     // Process in batches - collect results but don't commit yet
     for (let i = 0; i < emailsToProcess.length; i += concurrency) {

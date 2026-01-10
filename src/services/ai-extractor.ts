@@ -8,7 +8,7 @@ import type { ParsedEmail } from "./email-parser";
 import { getModelConfig, DEFAULT_MODEL_ID, type ModelConfig, type ModelProvider } from "./model-config";
 
 // Schema for a single transaction
-// Using .nullish() instead of .nullable() to allow fields to be omitted (OpenAI) or set to null (Claude)
+// Using .nullable() so fields are required but can be null (required by OpenAI structured output)
 // Using .strict() to add additionalProperties: false (required by OpenAI structured output)
 const SingleTransactionSchema = z.object({
   transactionType: z
@@ -36,85 +36,85 @@ const SingleTransactionSchema = z.object({
   // Date and amount
   transactionDate: z
     .string()
-    .nullish()
+    .nullable()
     .describe("Transaction date in ISO format (YYYY-MM-DD)"),
-  amount: z.number().nullish().describe("Transaction amount in dollars"),
+  amount: z.number().nullable().describe("Transaction amount in dollars"),
   currency: z.string().default("USD").describe("Currency code"),
 
   // Account information
   accountNumber: z
     .string()
-    .nullish()
+    .nullable()
     .describe("Account number or masked account number (e.g., XXXX-1802)"),
   accountName: z
     .string()
-    .nullish()
+    .nullable()
     .describe("Account name if mentioned (e.g., 'MAS Irrevocable Trust')"),
   institution: z
     .string()
-    .nullish()
+    .nullable()
     .describe("Financial institution name"),
 
   // For transfers - destination account
   toAccountNumber: z
     .string()
-    .nullish()
+    .nullable()
     .describe("Destination account number for transfers"),
   toAccountName: z
     .string()
-    .nullish()
+    .nullable()
     .describe("Destination account name for transfers"),
   toInstitution: z
     .string()
-    .nullish()
+    .nullable()
     .describe("Destination institution for transfers"),
 
   // Security/stock information
-  symbol: z.string().nullish().describe("Stock or option symbol (e.g., AAPL, INTC)"),
+  symbol: z.string().nullable().describe("Stock or option symbol (e.g., AAPL, INTC)"),
   securityName: z
     .string()
-    .nullish()
+    .nullable()
     .describe("Full security name (e.g., 'INTEL CORP')"),
-  quantity: z.number().nullish().describe("Number of shares or contracts"),
-  price: z.number().nullish().describe("Price per share or contract"),
+  quantity: z.number().nullable().describe("Number of shares or contracts"),
+  price: z.number().nullable().describe("Price per share or contract"),
 
   // Option-specific fields
   optionType: z
     .enum(["call", "put"])
-    .nullish()
+    .nullable()
     .describe("Option type if applicable"),
-  strikePrice: z.number().nullish().describe("Option strike price"),
+  strikePrice: z.number().nullable().describe("Option strike price"),
   expirationDate: z
     .string()
-    .nullish()
+    .nullable()
     .describe("Option expiration date in ISO format"),
   optionAction: z
     .enum(["buy_to_open", "buy_to_close", "sell_to_open", "sell_to_close", "assigned", "expired", "exercised"])
-    .nullish()
+    .nullable()
     .describe("Option action type"),
 
   // Trade-specific
   orderType: z
     .enum(["buy", "sell", "buy_to_cover", "sell_short"])
-    .nullish()
+    .nullable()
     .describe("Order type for stock trades"),
   orderStatus: z
     .enum(["executed", "cancelled", "partial", "pending"])
-    .nullish()
+    .nullable()
     .describe("Order execution status"),
 
   // Wire/transfer specific
-  fees: z.number().nullish().describe("Transaction fees"),
+  fees: z.number().nullable().describe("Transaction fees"),
   referenceNumber: z
     .string()
-    .nullish()
+    .nullable()
     .describe("Transaction reference or case number"),
 
   // RSU specific
-  grantNumber: z.string().nullish().describe("RSU grant number"),
+  grantNumber: z.string().nullable().describe("RSU grant number"),
   vestDate: z
     .string()
-    .nullish()
+    .nullable()
     .describe("RSU vesting date in ISO format"),
 
   // Additional extracted fields as key-value pairs (array format for Gemini compatibility)
@@ -123,7 +123,6 @@ const SingleTransactionSchema = z.object({
       key: z.string().describe("Field name"),
       value: z.string().describe("Field value as string"),
     }).strict())
-    .optional()
     .default([])
     .describe("Any other relevant fields extracted from the email as key-value pairs"),
 }).strict();

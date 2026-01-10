@@ -9,6 +9,55 @@ import { estimateBatchCost, formatCost, getModelConfig } from "./model-config";
 import { SOFTWARE_VERSION } from "@/config/version";
 import { transactionExtractionJsonSchema } from "@/schemas";
 
+/**
+ * Clean up stale "running" extraction runs left from server restarts
+ * Marks them as "failed" so they don't block the UI
+ */
+export async function cleanupStaleRuns(): Promise<number> {
+  try {
+    // First count how many stale runs exist
+    const staleRuns = await db
+      .select({ id: extractionRuns.id })
+      .from(extractionRuns)
+      .where(eq(extractionRuns.status, "running"));
+
+    if (staleRuns.length === 0) {
+      return 0;
+    }
+
+    // Update stale extraction runs to failed
+    await db
+      .update(extractionRuns)
+      .set({
+        status: "failed",
+        completedAt: new Date(),
+      })
+      .where(eq(extractionRuns.status, "running"));
+
+    // Also clean up stale jobs
+    await db
+      .update(jobs)
+      .set({
+        status: "failed",
+        completedAt: new Date(),
+        errorMessage: "Job interrupted by server restart",
+      })
+      .where(eq(jobs.status, "running"));
+
+    return staleRuns.length;
+  } catch (error) {
+    console.error("[Job Manager] Failed to cleanup stale runs:", error);
+    return 0;
+  }
+}
+
+// Run cleanup on module load (server startup)
+cleanupStaleRuns().then(count => {
+  if (count > 0) {
+    console.log(`[Job Manager] Cleaned up ${count} stale running extraction(s) from previous session`);
+  }
+});
+
 export type JobType = "email_scan" | "extraction" | "reprocess";
 export type JobStatus = "pending" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
@@ -283,9 +332,15 @@ export async function checkExistingExtraction(
     )
     .limit(1);
 
+  // Only consider a run as "existing" if it actually processed emails successfully
+  // A run that completed with 0 emails processed (e.g., due to errors or server restart)
+  // should not block new runs
+  const run = existing[0];
+  const hasResults = run && ((run.emailsProcessed ?? 0) > 0 || (run.transactionsCreated ?? 0) > 0);
+
   return {
-    exists: existing.length > 0,
-    run: existing[0],
+    exists: hasResults,
+    run: hasResults ? run : undefined,
   };
 }
 

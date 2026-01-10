@@ -10,7 +10,9 @@ import { createHash } from "crypto";
 // Configure for file uploads
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300; // 5 minutes for large uploads
+// Note: Vercel Hobby plan has 4.5MB payload limit, Pro has 10MB
+// Hobby plan also has 10s timeout, Pro+ needed for longer durations
+export const maxDuration = 300; // 5 minutes for large uploads (requires Pro+ plan)
 
 interface DocumentFile {
   filename: string;
@@ -96,7 +98,26 @@ export async function POST(request: NextRequest) {
 
       try {
         // Parse form data
-        const formData = await request.formData();
+        let formData: FormData;
+        try {
+          formData = await request.formData();
+        } catch (formError: unknown) {
+          // Check if it's a payload size error
+          if (formError instanceof Error &&
+              (formError.message.includes("payload") ||
+               formError.message.includes("size") ||
+               formError.message.includes("too large"))) {
+            sendProgress({
+              stage: "error",
+              message: "File size exceeds limit. Vercel Hobby plan supports up to 4.5MB. Please upgrade to Pro for 10MB+ uploads.",
+              current: 0,
+              total: 0,
+            });
+            controller.close();
+            return;
+          }
+          throw formError;
+        }
         const files = formData.getAll("files") as File[];
         const setName = formData.get("setName") as string | null;
         const existingSetId = formData.get("setId") as string | null;
@@ -211,12 +232,6 @@ export async function POST(request: NextRequest) {
 
         // Get all existing hashes in one query
         const allHashes = emailsWithHashes.map(e => e.contentHash);
-        const existingEmails = await db
-          .select({ contentHash: emails.contentHash, id: emails.id })
-          .from(emails)
-          .where(eq(emails.contentHash, allHashes[0])); // This won't work for multiple, need inArray
-
-        // Actually check duplicates properly with inArray
         const { inArray } = await import("drizzle-orm");
         const existingHashSet = new Set(
           (await db

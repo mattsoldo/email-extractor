@@ -116,9 +116,19 @@ npm run db:reset-schema -- --confirm
 
 ### Vercel (Recommended)
 
+📚 **See [DEPLOYMENT.md](DEPLOYMENT.md) for complete deployment guide**
+
+**Quick Start:**
 1. **Import project** to Vercel from GitHub
 2. **Add environment variables** - See [VERCEL_ENV_SETUP.md](docs/VERCEL_ENV_SETUP.md)
 3. **Deploy** - Migrations run automatically
+
+**Important Plan Requirements:**
+- **Hobby Plan (Free)**: Supports small uploads (< 4.5MB, < 10s processing)
+- **Pro Plan ($20/mo)**: Recommended for production (10MB uploads, 60s timeout)
+- **Enterprise**: Best for large-scale usage (custom limits)
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed plan comparison and troubleshooting.
 
 Required environment variables:
 - `DATABASE_URL` - Production PostgreSQL URL
@@ -126,6 +136,7 @@ Required environment variables:
 - `OPENAI_API_KEY`
 - `GOOGLE_GENERATIVE_AI_API_KEY`
 - `GEMINI_API_KEY`
+- `BLOB_READ_WRITE_TOKEN` - (Optional) For file backup storage
 
 ### Other Platforms
 

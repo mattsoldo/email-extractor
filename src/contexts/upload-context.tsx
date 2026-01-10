@@ -57,6 +57,21 @@ export function UploadProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    // Check total file size (Vercel Hobby plan has 4.5MB limit, Pro has 10MB)
+    const totalSize = fileArray.reduce((sum, file) => sum + file.size, 0);
+    const maxSizeHobby = 4.5 * 1024 * 1024; // 4.5MB
+    const maxSizePro = 10 * 1024 * 1024; // 10MB
+
+    if (totalSize > maxSizeHobby) {
+      const sizeMB = (totalSize / (1024 * 1024)).toFixed(2);
+      const warningMessage = totalSize > maxSizePro
+        ? `Upload size (${sizeMB}MB) exceeds Vercel Pro limit (10MB). Please split into smaller batches.`
+        : `Upload size (${sizeMB}MB) may exceed Vercel Hobby plan limit (4.5MB). Consider upgrading to Pro or splitting files.`;
+
+      // Show warning but allow attempt
+      console.warn(warningMessage);
+    }
+
     // Create abort controller for cancellation
     abortControllerRef.current = new AbortController();
 

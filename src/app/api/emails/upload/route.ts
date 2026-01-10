@@ -16,8 +16,9 @@ function computeContentHash(content: Buffer): string {
 // Configure for file uploads - increase body size limit
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// Increase max body size to 100MB for large zip files
-export const maxDuration = 60; // 60 seconds timeout for processing
+// Note: Vercel Hobby plan has 4.5MB payload limit, Pro has 10MB
+// For larger files, consider chunking or upgrading to Pro plan
+export const maxDuration = 60; // 60 seconds timeout (requires Pro+ plan, Hobby is 10s)
 
 interface DocumentFile {
   filename: string;
@@ -56,6 +57,16 @@ export async function POST(request: NextRequest) {
       formData = await request.formData();
     } catch (formError) {
       console.error("FormData parsing error:", formError);
+      // Check if it's a payload size error
+      if (formError instanceof Error &&
+          (formError.message.includes("payload") ||
+           formError.message.includes("size") ||
+           formError.message.includes("too large"))) {
+        return NextResponse.json(
+          { error: "File size exceeds limit. Vercel Hobby plan supports up to 4.5MB. Please upgrade to Pro for 10MB+ uploads or split into smaller files." },
+          { status: 413 }
+        );
+      }
       return NextResponse.json(
         { error: "Failed to parse form data" },
         { status: 400 }

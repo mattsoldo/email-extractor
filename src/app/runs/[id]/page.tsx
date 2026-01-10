@@ -132,6 +132,15 @@ export default function RunDetailPage() {
     return `${(ms / 60000).toFixed(1)}m`;
   };
 
+  const formatExtractionRate = (emailsProcessed: number, processingTimeMs: number | null | undefined) => {
+    if (!processingTimeMs || processingTimeMs === 0 || emailsProcessed === 0) return null;
+    const minutes = processingTimeMs / 60000;
+    const rate = emailsProcessed / minutes;
+    if (rate >= 100) return `${Math.round(rate)}/min`;
+    if (rate >= 10) return `${rate.toFixed(1)}/min`;
+    return `${rate.toFixed(2)}/min`;
+  };
+
   const formatAmount = (amount: string | null) => {
     if (!amount) return "-";
     const num = parseFloat(amount);
@@ -275,6 +284,10 @@ export default function RunDetailPage() {
                 {run.stats?.processingTimeMs
                   ? formatDuration(run.stats.processingTimeMs)
                   : "-"}
+              </div>
+              <div>
+                <span className="text-gray-500">Extraction Rate:</span>{" "}
+                {formatExtractionRate(run.emailsProcessed, run.stats?.processingTimeMs) || "-"}
               </div>
               <div>
                 <span className="text-gray-500">Started:</span>{" "}

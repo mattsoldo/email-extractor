@@ -154,6 +154,15 @@ export default function RunsPage() {
     return `${(ms / 60000).toFixed(1)}m`;
   };
 
+  const formatExtractionRate = (emailsProcessed: number, processingTimeMs: number | null | undefined) => {
+    if (!processingTimeMs || processingTimeMs === 0 || emailsProcessed === 0) return null;
+    const minutes = processingTimeMs / 60000;
+    const rate = emailsProcessed / minutes;
+    if (rate >= 100) return `${Math.round(rate)}/min`;
+    if (rate >= 10) return `${rate.toFixed(1)}/min`;
+    return `${rate.toFixed(2)}/min`;
+  };
+
   const formatAmount = (amount: string | null) => {
     if (!amount) return "-";
     const num = parseFloat(amount);
@@ -244,19 +253,20 @@ export default function RunsPage() {
                   <TableHead className="text-right">Errors</TableHead>
                   <TableHead>Started</TableHead>
                   <TableHead>Duration</TableHead>
+                  <TableHead>Rate</TableHead>
                   <TableHead className="w-[80px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center py-8">
+                    <TableCell colSpan={10} className="text-center py-8">
                       Loading...
                     </TableCell>
                   </TableRow>
                 ) : runs.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center py-8">
+                    <TableCell colSpan={10} className="text-center py-8">
                       No extraction runs found. Start an extraction job to see
                       results here.
                     </TableCell>
@@ -326,6 +336,9 @@ export default function RunsPage() {
                             : isRunning ? (
                                 <RefreshCw className="h-4 w-4 animate-spin text-blue-500" />
                               ) : "-"}
+                        </TableCell>
+                        <TableCell className="text-gray-600 text-sm">
+                          {formatExtractionRate(run.emailsProcessed, run.stats?.processingTimeMs) || "-"}
                         </TableCell>
                         <TableCell>
                           <div className="flex gap-1">

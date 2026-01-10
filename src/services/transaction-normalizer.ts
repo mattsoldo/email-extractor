@@ -313,16 +313,9 @@ export function normalizeTransaction(
   if (extraction.expirationDate) data.expirationDate = extraction.expirationDate;
   if (extraction.optionAction) data.optionAction = extraction.optionAction;
 
-  // Add trade-specific fields
-  if (extraction.orderType) data.orderType = extraction.orderType;
-  if (extraction.orderStatus) data.orderStatus = extraction.orderStatus;
-
   // Add RSU-specific fields
   if (extraction.grantNumber) data.grantNumber = extraction.grantNumber;
   if (extraction.vestDate) data.vestDate = extraction.vestDate;
-
-  // Add wire/transfer specific
-  if (extraction.referenceNumber) data.referenceNumber = extraction.referenceNumber;
 
   // Add security name
   if (extraction.securityName) data.securityName = extraction.securityName;
@@ -349,6 +342,9 @@ export function normalizeTransaction(
     quantity: extraction.quantity ? String(extraction.quantity) : null,
     price: extraction.price ? String(extraction.price) : null,
     fees: extraction.fees ? String(extraction.fees) : null,
+    orderType: extraction.orderType || null,
+    orderStatus: extraction.orderStatus || null,
+    referenceNumber: extraction.referenceNumber || null,
     data,
     confidence: extraction.confidence ? String(extraction.confidence) : null,
   };

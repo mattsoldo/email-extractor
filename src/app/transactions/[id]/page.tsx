@@ -44,10 +44,12 @@ interface Transaction {
   limitPrice: string | null;
   contractSize: number | null;
   orderId: string | null;
+  orderType: string | null;
   orderQuantity: string | null;
   orderPrice: string | null;
   orderStatus: string | null;
   timeInForce: string | null;
+  referenceNumber: string | null;
   partiallyExecuted: boolean | null;
   executionTime: string | null;
   accountId: string | null;
@@ -110,10 +112,12 @@ const ALL_FIELDS: Array<{ key: string; label: string }> = [
   { key: "limitPrice", label: "Limit Price" },
   { key: "contractSize", label: "Contract Size" },
   { key: "orderId", label: "Order ID" },
+  { key: "orderType", label: "Order Type" },
   { key: "orderQuantity", label: "Order Quantity" },
   { key: "orderPrice", label: "Order Price" },
   { key: "orderStatus", label: "Order Status" },
   { key: "timeInForce", label: "Time In Force" },
+  { key: "referenceNumber", label: "Reference Number" },
   { key: "partiallyExecuted", label: "Partially Executed" },
   { key: "executionTime", label: "Execution Time" },
   { key: "confidence", label: "Confidence" },

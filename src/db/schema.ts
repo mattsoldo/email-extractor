@@ -196,10 +196,12 @@ export const transactions = pgTable("transactions", {
 
   // Order tracking
   orderId: text("order_id"), // External order reference
+  orderType: text("order_type"), // buy, sell, short, cover, etc.
   orderQuantity: decimal("order_quantity", { precision: 18, scale: 6 }),
   orderPrice: decimal("order_price", { precision: 18, scale: 4 }),
   orderStatus: text("order_status"), // pending, filled, partial, cancelled, etc.
   timeInForce: text("time_in_force"), // day, gtc, ioc, fok, etc.
+  referenceNumber: text("reference_number"), // Transaction/order reference number
   partiallyExecuted: boolean("partially_executed").default(false),
   executionTime: text("execution_time"), // Time of execution
 

@@ -23,6 +23,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { format } from "date-fns";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -103,6 +104,12 @@ export default function RunsPage() {
   const [page, setPage] = useState(1);
   const [deleteInfo, setDeleteInfo] = useState<DeleteInfo | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [selectedRuns, setSelectedRuns] = useState<Set<string>>(new Set());
+  const [bulkDeleteInfo, setBulkDeleteInfo] = useState<{
+    runIds: string[];
+    totalTransactions: number;
+    runNames: string[];
+  } | null>(null);
 
   const fetchRuns = useCallback(async () => {
     setLoading(true);
@@ -195,10 +202,107 @@ export default function RunsPage() {
         return;
       }
 
+      // Auto-delete if less than 100 transactions (no confirmation needed)
+      if (data.transactionCount < 100) {
+        const confirmRes = await fetch(`/api/runs/${runId}?confirm=true`, {
+          method: "DELETE",
+        });
+        const confirmData = await confirmRes.json();
+
+        if (!confirmRes.ok) {
+          alert(confirmData.error || "Failed to delete run");
+          return;
+        }
+
+        fetchRuns();
+        return;
+      }
+
+      // Otherwise, show confirmation dialog
       setDeleteInfo(data);
     } catch (error) {
       console.error("Failed to get deletion info:", error);
       alert("Failed to prepare deletion");
+    }
+  };
+
+  // Toggle selection of a single run
+  const toggleRunSelection = (runId: string) => {
+    setSelectedRuns((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(runId)) {
+        newSet.delete(runId);
+      } else {
+        newSet.add(runId);
+      }
+      return newSet;
+    });
+  };
+
+  // Select/deselect all non-running runs on current page
+  const toggleSelectAll = () => {
+    const selectableRuns = runs.filter((run) => run.status !== "running");
+    const allSelected = selectableRuns.every((run) => selectedRuns.has(run.id));
+
+    if (allSelected) {
+      setSelectedRuns(new Set());
+    } else {
+      setSelectedRuns(new Set(selectableRuns.map((run) => run.id)));
+    }
+  };
+
+  // Prepare bulk delete - always requires confirmation
+  const handleBulkDelete = async () => {
+    const runIds = Array.from(selectedRuns);
+    if (runIds.length === 0) return;
+
+    try {
+      // Get transaction counts for all selected runs
+      const results = await Promise.all(
+        runIds.map(async (runId) => {
+          const res = await fetch(`/api/runs/${runId}`, { method: "DELETE" });
+          return res.json();
+        })
+      );
+
+      const totalTransactions = results.reduce(
+        (sum, r) => sum + (r.transactionCount || 0),
+        0
+      );
+      const runNames = results.map((r) => r.runName || "Unknown");
+
+      setBulkDeleteInfo({
+        runIds,
+        totalTransactions,
+        runNames,
+      });
+    } catch (error) {
+      console.error("Failed to prepare bulk deletion:", error);
+      alert("Failed to prepare bulk deletion");
+    }
+  };
+
+  // Confirm bulk delete
+  const confirmBulkDelete = async () => {
+    if (!bulkDeleteInfo) return;
+
+    setDeleting(true);
+    try {
+      // Delete each run
+      await Promise.all(
+        bulkDeleteInfo.runIds.map((runId) =>
+          fetch(`/api/runs/${runId}?confirm=true`, { method: "DELETE" })
+        )
+      );
+
+      setSelectedRuns(new Set());
+      setBulkDeleteInfo(null);
+      fetchRuns();
+    } catch (error) {
+      console.error("Failed to delete runs:", error);
+      alert("Failed to delete some runs");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -240,10 +344,22 @@ export default function RunsPage() {
               View history of AI extraction runs and their results
             </p>
           </div>
-          <Button onClick={fetchRuns} variant="outline" className="gap-2">
-            <RefreshCw className="h-4 w-4" />
-            Refresh
-          </Button>
+          <div className="flex gap-2">
+            {selectedRuns.size > 0 && (
+              <Button
+                onClick={handleBulkDelete}
+                variant="destructive"
+                className="gap-2"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete {selectedRuns.size} Run{selectedRuns.size > 1 ? "s" : ""}
+              </Button>
+            )}
+            <Button onClick={fetchRuns} variant="outline" className="gap-2">
+              <RefreshCw className="h-4 w-4" />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* Summary Stats */}
@@ -301,6 +417,17 @@ export default function RunsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-[40px]">
+                    <Checkbox
+                      checked={
+                        runs.filter((r) => r.status !== "running").length > 0 &&
+                        runs
+                          .filter((r) => r.status !== "running")
+                          .every((r) => selectedRuns.has(r.id))
+                      }
+                      onCheckedChange={toggleSelectAll}
+                    />
+                  </TableHead>
                   <TableHead>Version</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Model</TableHead>
@@ -315,13 +442,13 @@ export default function RunsPage() {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center py-8">
+                    <TableCell colSpan={10} className="text-center py-8">
                       Loading...
                     </TableCell>
                   </TableRow>
                 ) : runs.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center py-8">
+                    <TableCell colSpan={10} className="text-center py-8">
                       No extraction runs found. Start an extraction job to see
                       results here.
                     </TableCell>
@@ -335,6 +462,13 @@ export default function RunsPage() {
 
                     return (
                       <TableRow key={run.id} className={isRunning ? "bg-blue-50/30" : ""}>
+                        <TableCell>
+                          <Checkbox
+                            checked={selectedRuns.has(run.id)}
+                            onCheckedChange={() => toggleRunSelection(run.id)}
+                            disabled={isRunning}
+                          />
+                        </TableCell>
                         <TableCell>
                           <div className="flex flex-col">
                             <span className="font-semibold">v{run.version}</span>
@@ -460,28 +594,24 @@ export default function RunsPage() {
           </div>
         )}
 
-        {/* Delete Confirmation Dialog */}
+        {/* Single Delete Confirmation Dialog (only for runs with 100+ transactions) */}
         <AlertDialog open={!!deleteInfo} onOpenChange={() => setDeleteInfo(null)}>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle className="flex items-center gap-2">
-                {deleteInfo?.requiresConfirmation && (
-                  <AlertTriangle className="h-5 w-5 text-amber-500" />
-                )}
+                <AlertTriangle className="h-5 w-5 text-amber-500" />
                 Delete Extraction Run
               </AlertDialogTitle>
               <AlertDialogDescription className="space-y-2">
                 <p>
                   Are you sure you want to delete <strong>{deleteInfo?.runName}</strong>?
                 </p>
-                <p className={deleteInfo?.requiresConfirmation ? "text-amber-600 font-medium" : ""}>
+                <p className="text-amber-600 font-medium">
                   {deleteInfo?.message}
                 </p>
-                {deleteInfo?.requiresConfirmation && (
-                  <p className="text-red-600 text-sm">
-                    This action cannot be undone.
-                  </p>
-                )}
+                <p className="text-red-600 text-sm">
+                  This action cannot be undone.
+                </p>
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -492,6 +622,44 @@ export default function RunsPage() {
                 className="bg-red-600 hover:bg-red-700"
               >
                 {deleting ? "Deleting..." : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {/* Bulk Delete Confirmation Dialog (always shown for multi-select) */}
+        <AlertDialog open={!!bulkDeleteInfo} onOpenChange={() => setBulkDeleteInfo(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle className="flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-red-500" />
+                Delete {bulkDeleteInfo?.runIds.length} Extraction Run{bulkDeleteInfo?.runIds.length !== 1 ? "s" : ""}
+              </AlertDialogTitle>
+              <AlertDialogDescription className="space-y-2">
+                <p>
+                  Are you sure you want to delete the following runs?
+                </p>
+                <ul className="list-disc list-inside text-sm max-h-32 overflow-y-auto">
+                  {bulkDeleteInfo?.runNames.map((name, i) => (
+                    <li key={i}>{name}</li>
+                  ))}
+                </ul>
+                <p className="text-amber-600 font-medium">
+                  This will delete {bulkDeleteInfo?.totalTransactions} transaction{bulkDeleteInfo?.totalTransactions !== 1 ? "s" : ""} total.
+                </p>
+                <p className="text-red-600 text-sm">
+                  This action cannot be undone.
+                </p>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={confirmBulkDelete}
+                disabled={deleting}
+                className="bg-red-600 hover:bg-red-700"
+              >
+                {deleting ? "Deleting..." : `Delete ${bulkDeleteInfo?.runIds.length} Run${bulkDeleteInfo?.runIds.length !== 1 ? "s" : ""}`}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

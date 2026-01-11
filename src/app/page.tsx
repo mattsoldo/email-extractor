@@ -52,6 +52,7 @@ interface JobProgress {
   failedItems: number;
   skippedItems: number;
   informationalItems: number;
+  transactionsCreated: number;
   errorMessage: string | null;
   modelId?: string | null;
   modelName?: string | null;
@@ -228,7 +229,12 @@ export default function DashboardPage() {
     try {
       const res = await fetch("/api/jobs?active=true");
       const data = await res.json();
-      setActiveJobs(data.jobs || []);
+      // Ensure transactionsCreated has a default value
+      const jobs = (data.jobs || []).map((job: JobProgress) => ({
+        ...job,
+        transactionsCreated: job.transactionsCreated ?? 0,
+      }));
+      setActiveJobs(jobs);
     } catch (error) {
       console.error("Failed to fetch jobs:", error);
     }
@@ -424,6 +430,7 @@ export default function DashboardPage() {
                         failedItems: 0,
                         skippedItems: 0,
                         informationalItems: 0,
+                        transactionsCreated: 0,
                         errorMessage: null,
                         modelId: event.modelId,
                         modelName: event.modelName,
@@ -445,6 +452,22 @@ export default function DashboardPage() {
                                 failedItems: event.failedItems,
                                 informationalItems: event.informationalItems,
                                 totalItems: event.totalItems,
+                              }
+                            : job
+                        )
+                      );
+                    }
+                    break;
+
+                  case "batch_committed":
+                    // Update transaction count after batch is committed to DB
+                    if (streamingJobId) {
+                      setActiveJobs((prev) =>
+                        prev.map((job) =>
+                          job.id === streamingJobId
+                            ? {
+                                ...job,
+                                transactionsCreated: event.totalTransactionsCommitted,
                               }
                             : job
                         )
@@ -909,6 +932,11 @@ export default function DashboardPage() {
                         <div className="flex items-center gap-3">
                           <div className="text-sm text-gray-500">
                             {job.processedItems} / {job.totalItems} items
+                            {job.transactionsCreated > 0 && (
+                              <span className="text-green-600 ml-2 font-medium">
+                                ({job.transactionsCreated} tx saved)
+                              </span>
+                            )}
                             {job.informationalItems > 0 && (
                               <span className="text-blue-500 ml-2">
                                 ({job.informationalItems} info)

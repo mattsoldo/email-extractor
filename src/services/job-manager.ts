@@ -1036,6 +1036,7 @@ export type ExtractionProgressEvent =
   | { type: "started"; jobId: string; runId: string; totalItems: number; modelId: string; modelName: string }
   | { type: "progress"; processedItems: number; totalItems: number; failedItems: number; informationalItems: number; transactionsFound: number }
   | { type: "batch_complete"; batchSize: number; processedItems: number; totalItems: number }
+  | { type: "batch_committed"; transactionsCommitted: number; totalTransactionsCommitted: number; processedItems: number; totalItems: number }
   | { type: "committing"; transactionCount: number; extractionCount: number }
   | { type: "completed"; runId: string; transactionsCreated: number; emailsProcessed: number; processingTimeMs: number }
   | { type: "error"; error: string }
@@ -1170,22 +1171,280 @@ export async function* runExtractionJobStreaming(
   let processedItems = 0;
   let failedItems = 0;
   let informationalItems = 0;
+  let totalTransactionsCommitted = 0;
   const runStats = {
     byType: {} as Record<string, number>,
     totalConfidence: 0,
     transactionCount: 0,
   };
 
-  // Collect pending data
-  const pendingTransactions: PendingTransaction[] = [];
-  const pendingExtractions: PendingEmailExtraction[] = [];
-  const emailUpdates: Array<{
+  // Pending items to commit (cleared after each DB commit batch)
+  let pendingTransactions: PendingTransaction[] = [];
+  let pendingExtractions: PendingEmailExtraction[] = [];
+  let emailUpdates: Array<{
     id: string;
     status: "completed" | "informational" | "failed";
     extraction?: Record<string, unknown>;
     notes?: string;
     error?: string;
   }> = [];
+
+  // Pre-fetch accounts for efficient resolution
+  const existingAccounts = await db.select().from(accounts);
+  const accountsByMaskedNumber = new Map<string, typeof existingAccounts[0]>();
+  const accountsByName = new Map<string, typeof existingAccounts[0]>();
+
+  for (const account of existingAccounts) {
+    if (account.maskedNumber) {
+      accountsByMaskedNumber.set(account.maskedNumber.replace(/[\s-]/g, "").toUpperCase(), account);
+    }
+    if (account.displayName) {
+      accountsByName.set(account.displayName.toLowerCase(), account);
+    }
+  }
+
+  // Account resolution cache
+  const accountCache = new Map<string, string | null>();
+
+  function getAccountCacheKey(input: { accountNumber?: string | null; accountName?: string | null; institution?: string | null }): string {
+    return `${input.accountNumber || ''}_${input.accountName || ''}_${input.institution || ''}`;
+  }
+
+  // Helper to commit a batch of pending items to the database
+  async function commitBatch(): Promise<number> {
+    if (pendingTransactions.length === 0 && pendingExtractions.length === 0) {
+      return 0;
+    }
+
+    // Track new accounts to create in this batch
+    const newAccountsToCreate: Array<{
+      id: string;
+      displayName: string;
+      institution: string | null;
+      accountNumber: string | null;
+      maskedNumber: string | null;
+      accountType: string | null;
+      corpusId: string | null;
+      isExternal: boolean;
+      metadata: Record<string, unknown>;
+      createdAt: Date;
+      updatedAt: Date;
+    }> = [];
+
+    function findOrCreateAccountSync(input: { accountNumber?: string | null; accountName?: string | null; institution?: string | null; isExternal?: boolean }): string | null {
+      if (!input.accountNumber && !input.accountName) {
+        return null;
+      }
+
+      const cacheKey = getAccountCacheKey(input);
+      if (accountCache.has(cacheKey)) {
+        return accountCache.get(cacheKey)!;
+      }
+
+      if (input.accountNumber) {
+        const normalizedNumber = input.accountNumber.replace(/[\s-]/g, "").toUpperCase();
+        const existing = accountsByMaskedNumber.get(normalizedNumber);
+        if (existing) {
+          accountCache.set(cacheKey, existing.id);
+          return existing.id;
+        }
+        const last4 = normalizedNumber.match(/(\d{4})$/)?.[1];
+        if (last4) {
+          for (const [key, account] of accountsByMaskedNumber) {
+            if (key.endsWith(last4)) {
+              accountCache.set(cacheKey, account.id);
+              return account.id;
+            }
+          }
+        }
+      }
+
+      if (input.accountName) {
+        const existing = accountsByName.get(input.accountName.toLowerCase());
+        if (existing) {
+          accountCache.set(cacheKey, existing.id);
+          return existing.id;
+        }
+      }
+
+      const newId = uuid();
+      const newAccount = {
+        id: newId,
+        displayName: input.accountName || input.accountNumber || "Unknown Account",
+        institution: input.institution || null,
+        accountNumber: input.accountNumber?.includes("X") ? null : input.accountNumber || null,
+        maskedNumber: input.accountNumber || null,
+        accountType: null,
+        corpusId: null,
+        isExternal: input.isExternal || false,
+        metadata: {},
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      newAccountsToCreate.push(newAccount);
+
+      if (newAccount.maskedNumber) {
+        accountsByMaskedNumber.set(newAccount.maskedNumber.replace(/[\s-]/g, "").toUpperCase(), newAccount as typeof existingAccounts[0]);
+      }
+      if (newAccount.displayName) {
+        accountsByName.set(newAccount.displayName.toLowerCase(), newAccount as typeof existingAccounts[0]);
+      }
+
+      accountCache.set(cacheKey, newId);
+      return newId;
+    }
+
+    // Prepare transactions with account resolution
+    const transactionsToInsert: Array<{
+      id: string;
+      emailId: string;
+      data: ReturnType<typeof normalizeTransaction>;
+    }> = [];
+    const transactionIdsByEmail = new Map<string, string[]>();
+
+    for (const pending of pendingTransactions) {
+      const txData = pending.transaction;
+
+      const fromAccountId = findOrCreateAccountSync({
+        accountNumber: txData.accountNumber,
+        accountName: txData.accountName,
+        institution: txData.institution,
+      });
+
+      let toAccountId: string | null = null;
+      if (txData.toAccountNumber || txData.toAccountName) {
+        toAccountId = findOrCreateAccountSync({
+          accountNumber: txData.toAccountNumber,
+          accountName: txData.toAccountName,
+          institution: txData.toInstitution,
+          isExternal: txData.transactionType === "wire_transfer_out" || txData.transactionType === "wire_transfer_in",
+        });
+      }
+
+      const extractionForNormalize = {
+        ...txData,
+        isTransaction: true,
+        extractionNotes: null,
+      };
+
+      const normalizedTx = normalizeTransaction(extractionForNormalize, fromAccountId, toAccountId);
+      const txId = uuid();
+
+      transactionsToInsert.push({
+        id: txId,
+        emailId: pending.emailId,
+        data: normalizedTx,
+      });
+
+      if (!transactionIdsByEmail.has(pending.emailId)) {
+        transactionIdsByEmail.set(pending.emailId, []);
+      }
+      transactionIdsByEmail.get(pending.emailId)!.push(txId);
+    }
+
+    // Prepare email extractions
+    const extractionsToInsert = pendingExtractions.map(pending => {
+      const extraction = pending.extraction;
+      const procTimeMs = pending.endTime - pending.startTime;
+      const txIds = transactionIdsByEmail.get(pending.emailId) || [];
+
+      let status: "completed" | "informational" | "skipped" = "completed";
+      let avgConfidence: number | null = null;
+
+      if (extraction.isTransactional && extraction.transactions.length > 0) {
+        status = "completed";
+        const confidences = extraction.transactions
+          .map(t => t.confidence)
+          .filter((c): c is number => c !== null && c !== undefined);
+        if (confidences.length > 0) {
+          avgConfidence = confidences.reduce((sum, c) => sum + c, 0) / confidences.length;
+        }
+      } else {
+        status = "informational";
+      }
+
+      return {
+        id: uuid(),
+        emailId: pending.emailId,
+        runId: extractionRunId,
+        status,
+        rawExtraction: extraction as any,
+        confidence: avgConfidence ? avgConfidence.toFixed(2) : null,
+        processingTimeMs: procTimeMs,
+        transactionIds: txIds,
+      };
+    });
+
+    const BATCH_SIZE = 100;
+    const transactionsCommitted = transactionsToInsert.length;
+
+    // Insert accounts, transactions, extractions, and update emails
+    if (newAccountsToCreate.length > 0) {
+      for (let i = 0; i < newAccountsToCreate.length; i += BATCH_SIZE) {
+        const batch = newAccountsToCreate.slice(i, i + BATCH_SIZE);
+        await db.insert(accounts).values(batch);
+      }
+    }
+
+    if (transactionsToInsert.length > 0) {
+      for (let i = 0; i < transactionsToInsert.length; i += BATCH_SIZE) {
+        const batch = transactionsToInsert.slice(i, i + BATCH_SIZE).map(t => ({
+          ...t.data,
+          id: t.id,
+          sourceEmailId: t.emailId,
+          extractionRunId,
+          runCompleted: false, // Will be set to true when run completes
+        }));
+        await db.insert(transactions).values(batch);
+      }
+    }
+
+    if (extractionsToInsert.length > 0) {
+      for (let i = 0; i < extractionsToInsert.length; i += BATCH_SIZE) {
+        const batch = extractionsToInsert.slice(i, i + BATCH_SIZE);
+        await db.insert(emailExtractions).values(batch);
+      }
+    }
+
+    // Update email statuses
+    const completedEmails = emailUpdates.filter(u => u.status === "completed");
+    const informationalEmails = emailUpdates.filter(u => u.status === "informational");
+    const failedEmails = emailUpdates.filter(u => u.status === "failed");
+
+    if (completedEmails.length > 0) {
+      for (let i = 0; i < completedEmails.length; i += BATCH_SIZE) {
+        const batch = completedEmails.slice(i, i + BATCH_SIZE);
+        const ids = batch.map(e => e.id);
+        await db.update(emails).set({ extractionStatus: "completed", processedAt: new Date() }).where(inArray(emails.id, ids));
+      }
+    }
+
+    if (informationalEmails.length > 0) {
+      for (let i = 0; i < informationalEmails.length; i += BATCH_SIZE) {
+        const batch = informationalEmails.slice(i, i + BATCH_SIZE);
+        const ids = batch.map(e => e.id);
+        await db.update(emails).set({ extractionStatus: "informational", processedAt: new Date() }).where(inArray(emails.id, ids));
+      }
+    }
+
+    if (failedEmails.length > 0) {
+      for (let i = 0; i < failedEmails.length; i += BATCH_SIZE) {
+        const batch = failedEmails.slice(i, i + BATCH_SIZE);
+        const ids = batch.map(e => e.id);
+        await db.update(emails).set({ extractionStatus: "failed", processedAt: new Date() }).where(inArray(emails.id, ids));
+      }
+    }
+
+    // Clear pending items
+    pendingTransactions = [];
+    pendingExtractions = [];
+    emailUpdates = [];
+
+    return transactionsCommitted;
+  }
+
+  // Commit batch size (number of emails to process before committing to DB)
+  const COMMIT_BATCH_SIZE = 25;
 
   try {
     const concurrency = options.concurrency || 8;
@@ -1311,282 +1570,88 @@ export async function* runExtractionJobStreaming(
         processedItems,
         totalItems: emailsToProcess.length,
       };
+
+      // Commit to DB every COMMIT_BATCH_SIZE emails
+      if (pendingExtractions.length >= COMMIT_BATCH_SIZE) {
+        const transactionsCommitted = await commitBatch();
+        totalTransactionsCommitted += transactionsCommitted;
+
+        // Update extraction run with current progress
+        await db
+          .update(extractionRuns)
+          .set({
+            emailsProcessed: processedItems,
+            transactionsCreated: totalTransactionsCommitted,
+            informationalCount: informationalItems,
+            errorCount: failedItems,
+            stats: {
+              byType: runStats.byType,
+              avgConfidence: runStats.transactionCount > 0 ? runStats.totalConfidence / runStats.transactionCount : 0,
+              processingTimeMs: Date.now() - startTime,
+            },
+          })
+          .where(eq(extractionRuns.id, extractionRunId));
+
+        // Yield batch committed event
+        yield {
+          type: "batch_committed",
+          transactionsCommitted,
+          totalTransactionsCommitted,
+          processedItems,
+          totalItems: emailsToProcess.length,
+        };
+      }
     }
 
-    // Yield committing event
-    yield {
-      type: "committing",
-      transactionCount: pendingTransactions.length,
-      extractionCount: pendingExtractions.length,
-    };
+    // Commit any remaining pending items
+    if (pendingExtractions.length > 0) {
+      yield {
+        type: "committing",
+        transactionCount: pendingTransactions.length,
+        extractionCount: pendingExtractions.length,
+      };
+
+      const transactionsCommitted = await commitBatch();
+      totalTransactionsCommitted += transactionsCommitted;
+    }
 
     const processingTimeMs = Date.now() - startTime;
 
-    // COMMIT PHASE - same as runExtractionJob
-    // Pre-fetch accounts
-    const existingAccounts = await db.select().from(accounts);
-    const accountsByMaskedNumber = new Map<string, typeof existingAccounts[0]>();
-    const accountsByName = new Map<string, typeof existingAccounts[0]>();
+    // Mark all transactions from this run as runCompleted = true
+    await db
+      .update(transactions)
+      .set({ runCompleted: true })
+      .where(eq(transactions.extractionRunId, extractionRunId));
 
-    for (const account of existingAccounts) {
-      if (account.maskedNumber) {
-        accountsByMaskedNumber.set(account.maskedNumber.replace(/[\s-]/g, "").toUpperCase(), account);
-      }
-      if (account.displayName) {
-        accountsByName.set(account.displayName.toLowerCase(), account);
-      }
-    }
+    // Update extraction run as completed
+    await db
+      .update(extractionRuns)
+      .set({
+        status: "completed",
+        completedAt: new Date(),
+        emailsProcessed: processedItems,
+        transactionsCreated: totalTransactionsCommitted,
+        informationalCount: informationalItems,
+        errorCount: failedItems,
+        stats: {
+          byType: runStats.byType,
+          avgConfidence: runStats.transactionCount > 0 ? runStats.totalConfidence / runStats.transactionCount : 0,
+          processingTimeMs,
+        },
+      })
+      .where(eq(extractionRuns.id, extractionRunId));
 
-    // Account resolution helpers
-    const newAccountsToCreate: Array<{
-      id: string;
-      displayName: string;
-      institution: string | null;
-      accountNumber: string | null;
-      maskedNumber: string | null;
-      accountType: string | null;
-      corpusId: string | null;
-      isExternal: boolean;
-      metadata: Record<string, unknown>;
-      createdAt: Date;
-      updatedAt: Date;
-    }> = [];
-    const accountCache = new Map<string, string | null>();
-
-    function getAccountCacheKey(input: { accountNumber?: string | null; accountName?: string | null; institution?: string | null }): string {
-      return `${input.accountNumber || ''}_${input.accountName || ''}_${input.institution || ''}`;
-    }
-
-    function findOrCreateAccountSync(input: { accountNumber?: string | null; accountName?: string | null; institution?: string | null; isExternal?: boolean }): string | null {
-      if (!input.accountNumber && !input.accountName) {
-        return null;
-      }
-
-      const cacheKey = getAccountCacheKey(input);
-      if (accountCache.has(cacheKey)) {
-        return accountCache.get(cacheKey)!;
-      }
-
-      if (input.accountNumber) {
-        const normalizedNumber = input.accountNumber.replace(/[\s-]/g, "").toUpperCase();
-        const existing = accountsByMaskedNumber.get(normalizedNumber);
-        if (existing) {
-          accountCache.set(cacheKey, existing.id);
-          return existing.id;
-        }
-        const last4 = normalizedNumber.match(/(\d{4})$/)?.[1];
-        if (last4) {
-          for (const [key, account] of accountsByMaskedNumber) {
-            if (key.endsWith(last4)) {
-              accountCache.set(cacheKey, account.id);
-              return account.id;
-            }
-          }
-        }
-      }
-
-      if (input.accountName) {
-        const existing = accountsByName.get(input.accountName.toLowerCase());
-        if (existing) {
-          accountCache.set(cacheKey, existing.id);
-          return existing.id;
-        }
-      }
-
-      const newId = uuid();
-      const newAccount = {
-        id: newId,
-        displayName: input.accountName || input.accountNumber || "Unknown Account",
-        institution: input.institution || null,
-        accountNumber: input.accountNumber?.includes("X") ? null : input.accountNumber || null,
-        maskedNumber: input.accountNumber || null,
-        accountType: null,
-        corpusId: null,
-        isExternal: input.isExternal || false,
-        metadata: {},
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      newAccountsToCreate.push(newAccount);
-
-      if (newAccount.maskedNumber) {
-        accountsByMaskedNumber.set(newAccount.maskedNumber.replace(/[\s-]/g, "").toUpperCase(), newAccount as typeof existingAccounts[0]);
-      }
-      if (newAccount.displayName) {
-        accountsByName.set(newAccount.displayName.toLowerCase(), newAccount as typeof existingAccounts[0]);
-      }
-
-      accountCache.set(cacheKey, newId);
-      return newId;
-    }
-
-    // Prepare transactions
-    const transactionsToInsert: Array<{
-      id: string;
-      emailId: string;
-      data: ReturnType<typeof normalizeTransaction>;
-    }> = [];
-    const transactionIdsByEmail = new Map<string, string[]>();
-
-    for (const pending of pendingTransactions) {
-      const txData = pending.transaction;
-
-      const fromAccountId = findOrCreateAccountSync({
-        accountNumber: txData.accountNumber,
-        accountName: txData.accountName,
-        institution: txData.institution,
-      });
-
-      let toAccountId: string | null = null;
-      if (txData.toAccountNumber || txData.toAccountName) {
-        toAccountId = findOrCreateAccountSync({
-          accountNumber: txData.toAccountNumber,
-          accountName: txData.toAccountName,
-          institution: txData.toInstitution,
-          isExternal: txData.transactionType === "wire_transfer_out" || txData.transactionType === "wire_transfer_in",
-        });
-      }
-
-      const extractionForNormalize = {
-        ...txData,
-        isTransaction: true,
-        extractionNotes: null,
-      };
-
-      const normalizedTx = normalizeTransaction(extractionForNormalize, fromAccountId, toAccountId);
-      const txId = uuid();
-
-      transactionsToInsert.push({
-        id: txId,
-        emailId: pending.emailId,
-        data: normalizedTx,
-      });
-
-      if (!transactionIdsByEmail.has(pending.emailId)) {
-        transactionIdsByEmail.set(pending.emailId, []);
-      }
-      transactionIdsByEmail.get(pending.emailId)!.push(txId);
-    }
-
-    // Prepare email extractions
-    const extractionsToInsert = pendingExtractions.map(pending => {
-      const extraction = pending.extraction;
-      const procTimeMs = pending.endTime - pending.startTime;
-      const txIds = transactionIdsByEmail.get(pending.emailId) || [];
-
-      let status: "completed" | "informational" | "skipped" = "completed";
-      let avgConfidence: number | null = null;
-
-      if (extraction.isTransactional && extraction.transactions.length > 0) {
-        status = "completed";
-        const confidences = extraction.transactions
-          .map(t => t.confidence)
-          .filter((c): c is number => c !== null && c !== undefined);
-        if (confidences.length > 0) {
-          avgConfidence = confidences.reduce((sum, c) => sum + c, 0) / confidences.length;
-        }
-      } else {
-        status = "informational";
-      }
-
-      return {
-        id: uuid(),
-        emailId: pending.emailId,
-        runId: extractionRunId,
-        status,
-        rawExtraction: extraction as any,
-        confidence: avgConfidence ? avgConfidence.toFixed(2) : null,
-        processingTimeMs: procTimeMs,
-        transactionIds: txIds,
-      };
-    });
-
-    // Batch insert in transaction
-    const BATCH_SIZE = 100;
-
-    await db.transaction(async (tx) => {
-      if (newAccountsToCreate.length > 0) {
-        for (let i = 0; i < newAccountsToCreate.length; i += BATCH_SIZE) {
-          const batch = newAccountsToCreate.slice(i, i + BATCH_SIZE);
-          await tx.insert(accounts).values(batch);
-        }
-      }
-
-      if (transactionsToInsert.length > 0) {
-        for (let i = 0; i < transactionsToInsert.length; i += BATCH_SIZE) {
-          const batch = transactionsToInsert.slice(i, i + BATCH_SIZE).map(t => ({
-            ...t.data,
-            id: t.id,
-            sourceEmailId: t.emailId,
-            extractionRunId,
-          }));
-          await tx.insert(transactions).values(batch);
-        }
-      }
-
-      if (extractionsToInsert.length > 0) {
-        for (let i = 0; i < extractionsToInsert.length; i += BATCH_SIZE) {
-          const batch = extractionsToInsert.slice(i, i + BATCH_SIZE);
-          await tx.insert(emailExtractions).values(batch);
-        }
-      }
-
-      // Update email statuses
-      const completedEmails = emailUpdates.filter(u => u.status === "completed");
-      const informationalEmails = emailUpdates.filter(u => u.status === "informational");
-      const failedEmails = emailUpdates.filter(u => u.status === "failed");
-
-      if (completedEmails.length > 0) {
-        for (let i = 0; i < completedEmails.length; i += BATCH_SIZE) {
-          const batch = completedEmails.slice(i, i + BATCH_SIZE);
-          const ids = batch.map(e => e.id);
-          await tx.update(emails).set({ extractionStatus: "completed", processedAt: new Date() }).where(inArray(emails.id, ids));
-        }
-      }
-
-      if (informationalEmails.length > 0) {
-        for (let i = 0; i < informationalEmails.length; i += BATCH_SIZE) {
-          const batch = informationalEmails.slice(i, i + BATCH_SIZE);
-          const ids = batch.map(e => e.id);
-          await tx.update(emails).set({ extractionStatus: "informational", processedAt: new Date() }).where(inArray(emails.id, ids));
-        }
-      }
-
-      if (failedEmails.length > 0) {
-        for (let i = 0; i < failedEmails.length; i += BATCH_SIZE) {
-          const batch = failedEmails.slice(i, i + BATCH_SIZE);
-          const ids = batch.map(e => e.id);
-          await tx.update(emails).set({ extractionStatus: "failed", processedAt: new Date() }).where(inArray(emails.id, ids));
-        }
-      }
-
-      // Update extraction run
-      await tx
-        .update(extractionRuns)
-        .set({
-          status: "completed",
-          completedAt: new Date(),
-          emailsProcessed: processedItems,
-          transactionsCreated: runStats.transactionCount,
-          informationalCount: informationalItems,
-          errorCount: failedItems,
-          stats: {
-            byType: runStats.byType,
-            avgConfidence: runStats.transactionCount > 0 ? runStats.totalConfidence / runStats.transactionCount : 0,
-            processingTimeMs,
-          },
-        })
-        .where(eq(extractionRuns.id, extractionRunId));
-
-      // Update job
-      await tx.update(jobs).set({ status: "completed", completedAt: new Date() }).where(eq(jobs.id, jobId));
-    });
+    // Update job as completed
+    await db
+      .update(jobs)
+      .set({ status: "completed", completedAt: new Date() })
+      .where(eq(jobs.id, jobId));
 
     // Yield completed event
     yield {
       type: "completed",
       runId: extractionRunId,
-      transactionsCreated: runStats.transactionCount,
+      transactionsCreated: totalTransactionsCommitted,
       emailsProcessed: processedItems,
       processingTimeMs,
     };
@@ -1595,19 +1660,20 @@ export async function* runExtractionJobStreaming(
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     const processingTimeMs = Date.now() - startTime;
 
-    // Update run as failed
+    // Update run as failed (but keep track of transactions that were committed before failure)
+    // Note: transactions committed before failure have runCompleted = false
     await db
       .update(extractionRuns)
       .set({
         status: "failed",
         completedAt: new Date(),
         emailsProcessed: processedItems,
-        transactionsCreated: 0,
+        transactionsCreated: totalTransactionsCommitted,
         informationalCount: informationalItems,
         errorCount: failedItems,
         stats: {
           byType: runStats.byType,
-          avgConfidence: 0,
+          avgConfidence: runStats.transactionCount > 0 ? runStats.totalConfidence / runStats.transactionCount : 0,
           processingTimeMs,
         },
       })

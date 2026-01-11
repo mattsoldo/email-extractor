@@ -212,6 +212,7 @@ export const transactions = pgTable("transactions", {
   // Provenance
   sourceEmailId: text("source_email_id").references(() => emails.id),
   extractionRunId: text("extraction_run_id"), // Links to the extraction run that created this
+  runCompleted: boolean("run_completed").default(false), // True when the extraction run fully completed
   confidence: decimal("confidence", { precision: 3, scale: 2 }), // AI confidence
   llmModel: text("llm_model"), // Which LLM model extracted this
 

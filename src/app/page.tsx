@@ -343,7 +343,15 @@ export default function DashboardPage() {
 
     try {
       const parsedSampleSize = sampleSize ? parseInt(sampleSize) : undefined;
-      const res = await fetch("/api/jobs", {
+      const model = models.find((m) => m.id === selectedModelId);
+      const set = emailSets.find((s) => s.id === selectedSetId);
+      const prompt = prompts.find((p) => p.id === selectedPromptId);
+      const sampleInfo = parsedSampleSize && parsedSampleSize > 0
+        ? ` (random sample of ${parsedSampleSize})`
+        : "";
+
+      // Use streaming endpoint for reliable long-running extraction
+      const res = await fetch("/api/jobs/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -357,25 +365,142 @@ export default function DashboardPage() {
           },
         }),
       });
-      const data = await res.json();
 
       if (!res.ok) {
-        toast.error(data.error || "Failed to start extraction");
+        const text = await res.text();
+        try {
+          const data = JSON.parse(text);
+          toast.error(data.error || "Failed to start extraction");
+        } catch {
+          toast.error("Failed to start extraction");
+        }
         return;
       }
 
-      const model = models.find((m) => m.id === selectedModelId);
-      const set = emailSets.find((s) => s.id === selectedSetId);
-      const prompt = prompts.find((p) => p.id === selectedPromptId);
-      const sampleInfo = parsedSampleSize && parsedSampleSize > 0
-        ? ` (random sample of ${parsedSampleSize})`
-        : "";
       toast.success(`Extraction started for "${set?.name}"${sampleInfo} with ${model?.name || selectedModelId} using "${prompt?.name || 'prompt'}"`);
       setSampleSize(""); // Clear sample size after starting
-      fetchActiveJobs();
-      // Re-check eligibility after starting
-      checkEligibility(selectedSetId, selectedModelId, selectedPromptId);
+
+      // Track the streaming job locally
+      let streamingJobId: string | null = null;
+      let streamingRunId: string | null = null;
+
+      // Process the SSE stream
+      const reader = res.body?.getReader();
+      if (!reader) {
+        toast.error("Failed to read extraction stream");
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const event = JSON.parse(line.slice(6));
+
+                switch (event.type) {
+                  case "started":
+                    streamingJobId = event.jobId;
+                    streamingRunId = event.runId;
+                    // Add to active jobs
+                    setActiveJobs((prev) => [
+                      ...prev,
+                      {
+                        id: event.jobId,
+                        type: "extraction",
+                        status: "running",
+                        totalItems: event.totalItems,
+                        processedItems: 0,
+                        failedItems: 0,
+                        skippedItems: 0,
+                        informationalItems: 0,
+                        errorMessage: null,
+                        modelId: event.modelId,
+                        modelName: event.modelName,
+                        startedAt: new Date().toISOString(),
+                        completedAt: null,
+                      },
+                    ]);
+                    break;
+
+                  case "progress":
+                    // Update the job progress
+                    if (streamingJobId) {
+                      setActiveJobs((prev) =>
+                        prev.map((job) =>
+                          job.id === streamingJobId
+                            ? {
+                                ...job,
+                                processedItems: event.processedItems,
+                                failedItems: event.failedItems,
+                                informationalItems: event.informationalItems,
+                                totalItems: event.totalItems,
+                              }
+                            : job
+                        )
+                      );
+                    }
+                    break;
+
+                  case "completed":
+                    toast.success(
+                      `Extraction complete! ${event.transactionsCreated} transactions from ${event.emailsProcessed} emails`
+                    );
+                    // Remove from active jobs
+                    if (streamingJobId) {
+                      setActiveJobs((prev) =>
+                        prev.filter((job) => job.id !== streamingJobId)
+                      );
+                    }
+                    // Refresh recent runs and eligibility
+                    fetchActiveJobs();
+                    checkEligibility(selectedSetId, selectedModelId, selectedPromptId);
+                    break;
+
+                  case "error":
+                    toast.error(`Extraction failed: ${event.error}`);
+                    // Remove from active jobs
+                    if (streamingJobId) {
+                      setActiveJobs((prev) =>
+                        prev.filter((job) => job.id !== streamingJobId)
+                      );
+                    }
+                    fetchActiveJobs();
+                    break;
+
+                  case "done":
+                    // Stream finished
+                    break;
+                }
+              } catch (e) {
+                console.error("Failed to parse SSE event:", line, e);
+              }
+            }
+          }
+        }
+      } catch (streamError) {
+        console.error("Stream error:", streamError);
+        toast.error("Extraction stream interrupted");
+        // Remove from active jobs if we have an ID
+        if (streamingJobId) {
+          setActiveJobs((prev) =>
+            prev.filter((job) => job.id !== streamingJobId)
+          );
+        }
+        fetchActiveJobs();
+      }
     } catch (error) {
+      console.error("Start extraction error:", error);
       toast.error("Failed to start extraction job");
     }
   };

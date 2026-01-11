@@ -1028,3 +1028,600 @@ async function runExtractionJob(
 
 // NOTE: createTransactionFromExtraction function was removed -
 // transaction creation is now handled inline in runExtractionJob with support for multiple transactions per email
+
+/**
+ * Progress event types for streaming extraction
+ */
+export type ExtractionProgressEvent =
+  | { type: "started"; jobId: string; runId: string; totalItems: number; modelId: string; modelName: string }
+  | { type: "progress"; processedItems: number; totalItems: number; failedItems: number; informationalItems: number; transactionsFound: number }
+  | { type: "batch_complete"; batchSize: number; processedItems: number; totalItems: number }
+  | { type: "committing"; transactionCount: number; extractionCount: number }
+  | { type: "completed"; runId: string; transactionsCreated: number; emailsProcessed: number; processingTimeMs: number }
+  | { type: "error"; error: string }
+  | { type: "done" };
+
+/**
+ * Streaming version of extraction job that yields progress events.
+ * This runs synchronously (not fire-and-forget) and yields events as it progresses.
+ * Designed for use with Server-Sent Events to keep the connection alive on Vercel.
+ */
+export async function* runExtractionJobStreaming(
+  options: {
+    setId: string;
+    modelId?: string;
+    promptId: string;
+    customPromptContent?: string;
+    concurrency?: number;
+    runName?: string;
+    runDescription?: string;
+    sampleSize?: number;
+  }
+): AsyncGenerator<ExtractionProgressEvent> {
+  if (!options.setId) {
+    yield { type: "error", error: "setId is required for extraction" };
+    return;
+  }
+  if (!options.promptId) {
+    yield { type: "error", error: "promptId is required for extraction" };
+    return;
+  }
+
+  const startTime = Date.now();
+  const modelId = options.modelId || DEFAULT_MODEL_ID;
+  const setId = options.setId;
+
+  // Fetch the prompt from database
+  const promptResult = await db
+    .select()
+    .from(prompts)
+    .where(eq(prompts.id, options.promptId))
+    .limit(1);
+
+  if (promptResult.length === 0) {
+    yield { type: "error", error: `Prompt not found: ${options.promptId}` };
+    return;
+  }
+
+  const prompt = promptResult[0];
+  const promptContent = options.customPromptContent || prompt.content;
+  const hasCustomSchema = !!prompt.jsonSchema;
+  const jsonSchema = hasCustomSchema ? prompt.jsonSchema : null;
+
+  // Get model name
+  const [modelResult] = await db
+    .select({ name: aiModels.name })
+    .from(aiModels)
+    .where(eq(aiModels.id, modelId))
+    .limit(1);
+  const modelName = modelResult?.name || modelId;
+
+  // Create job record
+  const jobId = uuid();
+  await db.insert(jobs).values({
+    id: jobId,
+    type: "extraction",
+    status: "running",
+    startedAt: new Date(),
+    metadata: {
+      ...options,
+      softwareVersion: SOFTWARE_VERSION,
+      streaming: true,
+    },
+  });
+
+  // Create extraction run
+  const extractionRunId = uuid();
+  const [latestRun] = await db
+    .select({ version: extractionRuns.version })
+    .from(extractionRuns)
+    .orderBy(desc(extractionRuns.version))
+    .limit(1);
+  const nextVersion = (latestRun?.version || 0) + 1;
+
+  await db.insert(extractionRuns).values({
+    id: extractionRunId,
+    jobId,
+    setId,
+    version: nextVersion,
+    name: options.runName || null,
+    description: options.runDescription || null,
+    modelId,
+    promptId: options.promptId,
+    softwareVersion: SOFTWARE_VERSION,
+    config: options,
+    status: "running",
+    startedAt: new Date(),
+  });
+
+  // Get emails to process
+  let emailsToProcess = await db
+    .select()
+    .from(emails)
+    .where(eq(emails.setId, setId));
+
+  // Apply sampling if specified
+  const totalInSet = emailsToProcess.length;
+  if (options.sampleSize && options.sampleSize > 0 && options.sampleSize < totalInSet) {
+    const shuffled = [...emailsToProcess];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    emailsToProcess = shuffled.slice(0, options.sampleSize);
+  }
+
+  await db
+    .update(jobs)
+    .set({ totalItems: emailsToProcess.length })
+    .where(eq(jobs.id, jobId));
+
+  // Yield started event
+  yield {
+    type: "started",
+    jobId,
+    runId: extractionRunId,
+    totalItems: emailsToProcess.length,
+    modelId,
+    modelName,
+  };
+
+  // Track progress
+  let processedItems = 0;
+  let failedItems = 0;
+  let informationalItems = 0;
+  const runStats = {
+    byType: {} as Record<string, number>,
+    totalConfidence: 0,
+    transactionCount: 0,
+  };
+
+  // Collect pending data
+  const pendingTransactions: PendingTransaction[] = [];
+  const pendingExtractions: PendingEmailExtraction[] = [];
+  const emailUpdates: Array<{
+    id: string;
+    status: "completed" | "informational" | "failed";
+    extraction?: Record<string, unknown>;
+    notes?: string;
+    error?: string;
+  }> = [];
+
+  try {
+    const concurrency = options.concurrency || 8;
+
+    // Process in batches
+    for (let i = 0; i < emailsToProcess.length; i += concurrency) {
+      const batch = emailsToProcess.slice(i, i + concurrency);
+
+      const results = await Promise.allSettled(
+        batch.map(async (email) => {
+          const parsedEmail = {
+            id: email.id,
+            filename: email.filename,
+            subject: email.subject,
+            sender: email.sender,
+            senderName: email.senderName,
+            recipient: email.recipient,
+            recipientName: email.recipientName,
+            cc: email.cc,
+            replyTo: email.replyTo,
+            messageId: email.messageId,
+            inReplyTo: email.inReplyTo,
+            date: email.date,
+            receivedAt: email.receivedAt,
+            bodyText: email.bodyText,
+            bodyHtml: email.bodyHtml,
+            rawContent: email.rawContent,
+            headers: (email.headers as Record<string, string>) || {},
+          };
+
+          const extractionStartTime = Date.now();
+          const extraction = await extractTransaction(parsedEmail, modelId, promptContent, jsonSchema);
+          const extractionEndTime = Date.now();
+
+          return { email, extraction, startTime: extractionStartTime, endTime: extractionEndTime };
+        })
+      );
+
+      // Process results
+      for (let j = 0; j < results.length; j++) {
+        const result = results[j];
+        const email = batch[j];
+
+        if (result.status === "fulfilled") {
+          const { extraction, startTime: extStart, endTime: extEnd } = result.value;
+
+          pendingExtractions.push({
+            emailId: email.id,
+            extraction,
+            startTime: extStart,
+            endTime: extEnd,
+          });
+
+          if (extraction.isTransactional && extraction.transactions.length > 0) {
+            for (let txIndex = 0; txIndex < extraction.transactions.length; txIndex++) {
+              const transaction = extraction.transactions[txIndex];
+              pendingTransactions.push({
+                emailId: email.id,
+                transaction,
+                transactionIndex: txIndex,
+              });
+
+              runStats.transactionCount++;
+              runStats.byType[transaction.transactionType] = (runStats.byType[transaction.transactionType] || 0) + 1;
+              runStats.totalConfidence += transaction.confidence || 0;
+            }
+
+            emailUpdates.push({
+              id: email.id,
+              status: "completed",
+              extraction: extraction as unknown as Record<string, unknown>,
+            });
+          } else {
+            const notes = extraction.extractionNotes ||
+              `Non-transactional email (type: ${extraction.emailType})`;
+            emailUpdates.push({
+              id: email.id,
+              status: "informational",
+              extraction: extraction as unknown as Record<string, unknown>,
+              notes,
+            });
+            informationalItems++;
+          }
+
+          processedItems++;
+        } else {
+          const error = result.reason as Error;
+          await logExtractionError(email.id, jobId, error, "error");
+          emailUpdates.push({
+            id: email.id,
+            status: "failed",
+            error: error.message,
+          });
+          failedItems++;
+          processedItems++;
+        }
+      }
+
+      // Update job progress in DB
+      await db
+        .update(jobs)
+        .set({
+          processedItems,
+          failedItems,
+          informationalItems,
+        })
+        .where(eq(jobs.id, jobId));
+
+      // Yield progress event
+      yield {
+        type: "progress",
+        processedItems,
+        totalItems: emailsToProcess.length,
+        failedItems,
+        informationalItems,
+        transactionsFound: runStats.transactionCount,
+      };
+
+      // Yield batch complete event
+      yield {
+        type: "batch_complete",
+        batchSize: batch.length,
+        processedItems,
+        totalItems: emailsToProcess.length,
+      };
+    }
+
+    // Yield committing event
+    yield {
+      type: "committing",
+      transactionCount: pendingTransactions.length,
+      extractionCount: pendingExtractions.length,
+    };
+
+    const processingTimeMs = Date.now() - startTime;
+
+    // COMMIT PHASE - same as runExtractionJob
+    // Pre-fetch accounts
+    const existingAccounts = await db.select().from(accounts);
+    const accountsByMaskedNumber = new Map<string, typeof existingAccounts[0]>();
+    const accountsByName = new Map<string, typeof existingAccounts[0]>();
+
+    for (const account of existingAccounts) {
+      if (account.maskedNumber) {
+        accountsByMaskedNumber.set(account.maskedNumber.replace(/[\s-]/g, "").toUpperCase(), account);
+      }
+      if (account.displayName) {
+        accountsByName.set(account.displayName.toLowerCase(), account);
+      }
+    }
+
+    // Account resolution helpers
+    const newAccountsToCreate: Array<{
+      id: string;
+      displayName: string;
+      institution: string | null;
+      accountNumber: string | null;
+      maskedNumber: string | null;
+      accountType: string | null;
+      corpusId: string | null;
+      isExternal: boolean;
+      metadata: Record<string, unknown>;
+      createdAt: Date;
+      updatedAt: Date;
+    }> = [];
+    const accountCache = new Map<string, string | null>();
+
+    function getAccountCacheKey(input: { accountNumber?: string | null; accountName?: string | null; institution?: string | null }): string {
+      return `${input.accountNumber || ''}_${input.accountName || ''}_${input.institution || ''}`;
+    }
+
+    function findOrCreateAccountSync(input: { accountNumber?: string | null; accountName?: string | null; institution?: string | null; isExternal?: boolean }): string | null {
+      if (!input.accountNumber && !input.accountName) {
+        return null;
+      }
+
+      const cacheKey = getAccountCacheKey(input);
+      if (accountCache.has(cacheKey)) {
+        return accountCache.get(cacheKey)!;
+      }
+
+      if (input.accountNumber) {
+        const normalizedNumber = input.accountNumber.replace(/[\s-]/g, "").toUpperCase();
+        const existing = accountsByMaskedNumber.get(normalizedNumber);
+        if (existing) {
+          accountCache.set(cacheKey, existing.id);
+          return existing.id;
+        }
+        const last4 = normalizedNumber.match(/(\d{4})$/)?.[1];
+        if (last4) {
+          for (const [key, account] of accountsByMaskedNumber) {
+            if (key.endsWith(last4)) {
+              accountCache.set(cacheKey, account.id);
+              return account.id;
+            }
+          }
+        }
+      }
+
+      if (input.accountName) {
+        const existing = accountsByName.get(input.accountName.toLowerCase());
+        if (existing) {
+          accountCache.set(cacheKey, existing.id);
+          return existing.id;
+        }
+      }
+
+      const newId = uuid();
+      const newAccount = {
+        id: newId,
+        displayName: input.accountName || input.accountNumber || "Unknown Account",
+        institution: input.institution || null,
+        accountNumber: input.accountNumber?.includes("X") ? null : input.accountNumber || null,
+        maskedNumber: input.accountNumber || null,
+        accountType: null,
+        corpusId: null,
+        isExternal: input.isExternal || false,
+        metadata: {},
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      newAccountsToCreate.push(newAccount);
+
+      if (newAccount.maskedNumber) {
+        accountsByMaskedNumber.set(newAccount.maskedNumber.replace(/[\s-]/g, "").toUpperCase(), newAccount as typeof existingAccounts[0]);
+      }
+      if (newAccount.displayName) {
+        accountsByName.set(newAccount.displayName.toLowerCase(), newAccount as typeof existingAccounts[0]);
+      }
+
+      accountCache.set(cacheKey, newId);
+      return newId;
+    }
+
+    // Prepare transactions
+    const transactionsToInsert: Array<{
+      id: string;
+      emailId: string;
+      data: ReturnType<typeof normalizeTransaction>;
+    }> = [];
+    const transactionIdsByEmail = new Map<string, string[]>();
+
+    for (const pending of pendingTransactions) {
+      const txData = pending.transaction;
+
+      const fromAccountId = findOrCreateAccountSync({
+        accountNumber: txData.accountNumber,
+        accountName: txData.accountName,
+        institution: txData.institution,
+      });
+
+      let toAccountId: string | null = null;
+      if (txData.toAccountNumber || txData.toAccountName) {
+        toAccountId = findOrCreateAccountSync({
+          accountNumber: txData.toAccountNumber,
+          accountName: txData.toAccountName,
+          institution: txData.toInstitution,
+          isExternal: txData.transactionType === "wire_transfer_out" || txData.transactionType === "wire_transfer_in",
+        });
+      }
+
+      const extractionForNormalize = {
+        ...txData,
+        isTransaction: true,
+        extractionNotes: null,
+      };
+
+      const normalizedTx = normalizeTransaction(extractionForNormalize, fromAccountId, toAccountId);
+      const txId = uuid();
+
+      transactionsToInsert.push({
+        id: txId,
+        emailId: pending.emailId,
+        data: normalizedTx,
+      });
+
+      if (!transactionIdsByEmail.has(pending.emailId)) {
+        transactionIdsByEmail.set(pending.emailId, []);
+      }
+      transactionIdsByEmail.get(pending.emailId)!.push(txId);
+    }
+
+    // Prepare email extractions
+    const extractionsToInsert = pendingExtractions.map(pending => {
+      const extraction = pending.extraction;
+      const procTimeMs = pending.endTime - pending.startTime;
+      const txIds = transactionIdsByEmail.get(pending.emailId) || [];
+
+      let status: "completed" | "informational" | "skipped" = "completed";
+      let avgConfidence: number | null = null;
+
+      if (extraction.isTransactional && extraction.transactions.length > 0) {
+        status = "completed";
+        const confidences = extraction.transactions
+          .map(t => t.confidence)
+          .filter((c): c is number => c !== null && c !== undefined);
+        if (confidences.length > 0) {
+          avgConfidence = confidences.reduce((sum, c) => sum + c, 0) / confidences.length;
+        }
+      } else {
+        status = "informational";
+      }
+
+      return {
+        id: uuid(),
+        emailId: pending.emailId,
+        runId: extractionRunId,
+        status,
+        rawExtraction: extraction as any,
+        confidence: avgConfidence ? avgConfidence.toFixed(2) : null,
+        processingTimeMs: procTimeMs,
+        transactionIds: txIds,
+      };
+    });
+
+    // Batch insert in transaction
+    const BATCH_SIZE = 100;
+
+    await db.transaction(async (tx) => {
+      if (newAccountsToCreate.length > 0) {
+        for (let i = 0; i < newAccountsToCreate.length; i += BATCH_SIZE) {
+          const batch = newAccountsToCreate.slice(i, i + BATCH_SIZE);
+          await tx.insert(accounts).values(batch);
+        }
+      }
+
+      if (transactionsToInsert.length > 0) {
+        for (let i = 0; i < transactionsToInsert.length; i += BATCH_SIZE) {
+          const batch = transactionsToInsert.slice(i, i + BATCH_SIZE).map(t => ({
+            ...t.data,
+            id: t.id,
+            sourceEmailId: t.emailId,
+            extractionRunId,
+          }));
+          await tx.insert(transactions).values(batch);
+        }
+      }
+
+      if (extractionsToInsert.length > 0) {
+        for (let i = 0; i < extractionsToInsert.length; i += BATCH_SIZE) {
+          const batch = extractionsToInsert.slice(i, i + BATCH_SIZE);
+          await tx.insert(emailExtractions).values(batch);
+        }
+      }
+
+      // Update email statuses
+      const completedEmails = emailUpdates.filter(u => u.status === "completed");
+      const informationalEmails = emailUpdates.filter(u => u.status === "informational");
+      const failedEmails = emailUpdates.filter(u => u.status === "failed");
+
+      if (completedEmails.length > 0) {
+        for (let i = 0; i < completedEmails.length; i += BATCH_SIZE) {
+          const batch = completedEmails.slice(i, i + BATCH_SIZE);
+          const ids = batch.map(e => e.id);
+          await tx.update(emails).set({ extractionStatus: "completed", processedAt: new Date() }).where(inArray(emails.id, ids));
+        }
+      }
+
+      if (informationalEmails.length > 0) {
+        for (let i = 0; i < informationalEmails.length; i += BATCH_SIZE) {
+          const batch = informationalEmails.slice(i, i + BATCH_SIZE);
+          const ids = batch.map(e => e.id);
+          await tx.update(emails).set({ extractionStatus: "informational", processedAt: new Date() }).where(inArray(emails.id, ids));
+        }
+      }
+
+      if (failedEmails.length > 0) {
+        for (let i = 0; i < failedEmails.length; i += BATCH_SIZE) {
+          const batch = failedEmails.slice(i, i + BATCH_SIZE);
+          const ids = batch.map(e => e.id);
+          await tx.update(emails).set({ extractionStatus: "failed", processedAt: new Date() }).where(inArray(emails.id, ids));
+        }
+      }
+
+      // Update extraction run
+      await tx
+        .update(extractionRuns)
+        .set({
+          status: "completed",
+          completedAt: new Date(),
+          emailsProcessed: processedItems,
+          transactionsCreated: runStats.transactionCount,
+          informationalCount: informationalItems,
+          errorCount: failedItems,
+          stats: {
+            byType: runStats.byType,
+            avgConfidence: runStats.transactionCount > 0 ? runStats.totalConfidence / runStats.transactionCount : 0,
+            processingTimeMs,
+          },
+        })
+        .where(eq(extractionRuns.id, extractionRunId));
+
+      // Update job
+      await tx.update(jobs).set({ status: "completed", completedAt: new Date() }).where(eq(jobs.id, jobId));
+    });
+
+    // Yield completed event
+    yield {
+      type: "completed",
+      runId: extractionRunId,
+      transactionsCreated: runStats.transactionCount,
+      emailsProcessed: processedItems,
+      processingTimeMs,
+    };
+
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    const processingTimeMs = Date.now() - startTime;
+
+    // Update run as failed
+    await db
+      .update(extractionRuns)
+      .set({
+        status: "failed",
+        completedAt: new Date(),
+        emailsProcessed: processedItems,
+        transactionsCreated: 0,
+        informationalCount: informationalItems,
+        errorCount: failedItems,
+        stats: {
+          byType: runStats.byType,
+          avgConfidence: 0,
+          processingTimeMs,
+        },
+      })
+      .where(eq(extractionRuns.id, extractionRunId));
+
+    await db
+      .update(jobs)
+      .set({
+        status: "failed",
+        errorMessage,
+        completedAt: new Date(),
+      })
+      .where(eq(jobs.id, jobId));
+
+    yield { type: "error", error: errorMessage };
+  }
+}

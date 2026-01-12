@@ -193,6 +193,15 @@ export const transactions = pgTable("transactions", {
 
   // Options-specific
   contractSize: integer("contract_size"),
+  optionType: text("option_type"), // 'call' or 'put'
+  strikePrice: decimal("strike_price", { precision: 18, scale: 4 }),
+  expirationDate: text("expiration_date"), // ISO date string (YYYY-MM-DD)
+  optionAction: text("option_action"), // buy_to_open, sell_to_close, assigned, etc.
+  securityName: text("security_name"), // Full security name (e.g., INTEL CORP)
+
+  // RSU/Stock grant fields
+  grantNumber: text("grant_number"),
+  vestDate: text("vest_date"), // ISO date string (YYYY-MM-DD)
 
   // Order tracking
   orderId: text("order_id"), // External order reference

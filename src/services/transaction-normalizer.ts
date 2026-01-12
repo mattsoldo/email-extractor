@@ -345,6 +345,16 @@ export function normalizeTransaction(
     orderType: extraction.orderType || null,
     orderStatus: extraction.orderStatus || null,
     referenceNumber: extraction.referenceNumber || null,
+    // Options-specific fields (dedicated columns)
+    optionType: extraction.optionType || null,
+    strikePrice: extraction.strikePrice ? String(extraction.strikePrice) : null,
+    expirationDate: extraction.expirationDate || null,
+    optionAction: extraction.optionAction || null,
+    securityName: extraction.securityName || null,
+    // RSU/Stock grant fields (dedicated columns)
+    grantNumber: extraction.grantNumber || null,
+    vestDate: extraction.vestDate || null,
+    // Legacy data object (still populated for backward compatibility)
     data,
     confidence: extraction.confidence ? String(extraction.confidence) : null,
   };

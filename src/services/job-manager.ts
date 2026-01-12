@@ -50,12 +50,12 @@ export async function cleanupStaleRuns(): Promise<number> {
   }
 }
 
-// Run cleanup on module load (server startup)
-cleanupStaleRuns().then(count => {
-  if (count > 0) {
-    console.log(`[Job Manager] Cleaned up ${count} stale running extraction(s) from previous session`);
-  }
-});
+// NOTE: cleanupStaleRuns() should NOT be called on module load in serverless environments.
+// On Vercel, multiple function instances run concurrently. If one instance imports this module
+// while another is running an extraction, it would incorrectly mark the running job as failed.
+// Instead, stale jobs are cleaned up:
+// 1. When a new extraction is started (checks for jobs running > 10 minutes without progress)
+// 2. Manually via admin action if needed
 
 export type JobType = "email_scan" | "extraction" | "reprocess";
 export type JobStatus = "pending" | "running" | "paused" | "completed" | "failed" | "cancelled";

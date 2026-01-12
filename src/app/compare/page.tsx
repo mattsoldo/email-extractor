@@ -26,10 +26,13 @@ import {
   XCircle,
   AlertTriangle,
   ChevronDown,
+  ChevronUp,
   Trophy,
   Scale,
   ArrowLeftRight,
   Eye,
+  Mail,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -87,6 +90,12 @@ interface ComparisonResult {
   comparisons: TransactionComparison[];
 }
 
+interface EmailContent {
+  bodyHtml: string | null;
+  bodyText: string | null;
+  subject: string | null;
+}
+
 function ComparePageContent() {
   const searchParams = useSearchParams();
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
@@ -96,6 +105,9 @@ function ComparePageContent() {
   const [loading, setLoading] = useState(false);
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [initialized, setInitialized] = useState(false);
+  const [expandedEmailPreviews, setExpandedEmailPreviews] = useState<Set<string>>(new Set());
+  const [emailContents, setEmailContents] = useState<Map<string, EmailContent>>(new Map());
+  const [loadingEmails, setLoadingEmails] = useState<Set<string>>(new Set());
 
   const fetchRuns = useCallback(async () => {
     try {
@@ -209,6 +221,48 @@ function ComparePageContent() {
       }
     } catch (error) {
       toast.error("Failed to set winner");
+    }
+  };
+
+  const toggleEmailPreview = async (emailId: string) => {
+    if (expandedEmailPreviews.has(emailId)) {
+      // Collapse
+      setExpandedEmailPreviews((prev) => {
+        const next = new Set(prev);
+        next.delete(emailId);
+        return next;
+      });
+    } else {
+      // Expand and fetch content if not cached
+      setExpandedEmailPreviews((prev) => new Set(prev).add(emailId));
+
+      if (!emailContents.has(emailId)) {
+        setLoadingEmails((prev) => new Set(prev).add(emailId));
+        try {
+          const res = await fetch(`/api/emails/${emailId}`);
+          if (res.ok) {
+            const data = await res.json();
+            setEmailContents((prev) => {
+              const next = new Map(prev);
+              next.set(emailId, {
+                bodyHtml: data.email.bodyHtml,
+                bodyText: data.email.bodyText,
+                subject: data.email.subject,
+              });
+              return next;
+            });
+          }
+        } catch (error) {
+          console.error("Failed to fetch email content:", error);
+          toast.error("Failed to load email content");
+        } finally {
+          setLoadingEmails((prev) => {
+            const next = new Set(prev);
+            next.delete(emailId);
+            return next;
+          });
+        }
+      }
     }
   };
 
@@ -555,9 +609,71 @@ function ComparePageContent() {
                           )}
                         </div>
 
+                        {/* View Email button and preview */}
+                        {item.status !== "match" && (
+                          <div className="mt-4">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="gap-2 mb-3"
+                              onClick={() => toggleEmailPreview(item.emailId)}
+                            >
+                              {loadingEmails.has(item.emailId) ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Mail className="h-4 w-4" />
+                              )}
+                              {expandedEmailPreviews.has(item.emailId) ? "Hide" : "View"} Original Email
+                              {expandedEmailPreviews.has(item.emailId) ? (
+                                <ChevronUp className="h-4 w-4" />
+                              ) : (
+                                <ChevronDown className="h-4 w-4" />
+                              )}
+                            </Button>
+
+                            {expandedEmailPreviews.has(item.emailId) && (
+                              <div className="mb-4 border rounded-lg overflow-hidden bg-white">
+                                <div className="px-3 py-2 bg-gray-100 border-b text-sm font-medium text-gray-700">
+                                  Original Email Content
+                                </div>
+                                {loadingEmails.has(item.emailId) ? (
+                                  <div className="flex items-center justify-center py-12">
+                                    <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                                    <span className="ml-2 text-gray-500">Loading email...</span>
+                                  </div>
+                                ) : emailContents.has(item.emailId) ? (
+                                  <div className="max-h-96 overflow-auto">
+                                    {emailContents.get(item.emailId)?.bodyHtml ? (
+                                      <iframe
+                                        srcDoc={emailContents.get(item.emailId)?.bodyHtml || ""}
+                                        sandbox="allow-same-origin"
+                                        className="w-full min-h-[300px] border-0"
+                                        style={{ height: "400px" }}
+                                        title="Email content"
+                                      />
+                                    ) : emailContents.get(item.emailId)?.bodyText ? (
+                                      <pre className="p-4 text-sm whitespace-pre-wrap font-mono text-gray-700">
+                                        {emailContents.get(item.emailId)?.bodyText}
+                                      </pre>
+                                    ) : (
+                                      <div className="p-4 text-sm text-gray-500 italic">
+                                        No email content available
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="p-4 text-sm text-gray-500 italic">
+                                    Failed to load email content
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {/* Winner designation buttons */}
                         {item.status !== "match" && (
-                          <div className="mt-4 flex items-center gap-4">
+                          <div className="flex items-center gap-4">
                             <span className="text-sm font-medium text-gray-600">Designate winner:</span>
                             <div className="flex gap-2">
                               <Button

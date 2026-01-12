@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, Suspense } from "react";
+import { useEffect, useState, useCallback, Suspense, useMemo } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Navigation } from "@/components/navigation";
@@ -23,7 +23,6 @@ import { format } from "date-fns";
 import {
   RefreshCw,
   CheckCircle2,
-  XCircle,
   AlertTriangle,
   ChevronDown,
   ChevronUp,
@@ -33,6 +32,8 @@ import {
   Eye,
   Mail,
   Loader2,
+  Equal,
+  Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -104,10 +105,12 @@ function ComparePageContent() {
   const [comparison, setComparison] = useState<ComparisonResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+  const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set());
   const [initialized, setInitialized] = useState(false);
   const [expandedEmailPreviews, setExpandedEmailPreviews] = useState<Set<string>>(new Set());
   const [emailContents, setEmailContents] = useState<Map<string, EmailContent>>(new Map());
   const [loadingEmails, setLoadingEmails] = useState<Set<string>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState<Set<string>>(new Set());
 
   const fetchRuns = useCallback(async () => {
     try {
@@ -123,6 +126,30 @@ function ComparePageContent() {
     fetchRuns();
   }, [fetchRuns]);
 
+  // Compute grouped comparisons
+  const { exclusiveItems, differentByType } = useMemo(() => {
+    if (!comparison) {
+      return { exclusiveItems: [], differentByType: new Map<string, TransactionComparison[]>() };
+    }
+
+    const exclusive = comparison.comparisons.filter(
+      (c) => c.status === "only_a" || c.status === "only_b"
+    );
+    const different = comparison.comparisons.filter((c) => c.status === "different");
+
+    // Group different by transaction type
+    const byType = new Map<string, TransactionComparison[]>();
+    for (const item of different) {
+      const type = item.runATransaction?.type || item.runBTransaction?.type || "unknown";
+      if (!byType.has(type)) {
+        byType.set(type, []);
+      }
+      byType.get(type)!.push(item);
+    }
+
+    return { exclusiveItems: exclusive, differentByType: byType };
+  }, [comparison]);
+
   // Initialize from URL parameters and trigger comparison
   useEffect(() => {
     if (!initialized && runs.length > 0) {
@@ -134,7 +161,6 @@ function ComparePageContent() {
         setRunBId(urlRunB);
         setInitialized(true);
 
-        // Trigger comparison automatically with URL parameters
         const loadComparison = async () => {
           setLoading(true);
           try {
@@ -142,14 +168,15 @@ function ComparePageContent() {
             const data = await res.json();
             if (res.ok) {
               setComparison(data);
-              // Auto-expand items with differences
-              const toExpand = new Set<string>();
+              // Auto-expand all type groups
+              const types = new Set<string>();
               data.comparisons.forEach((c: TransactionComparison) => {
-                if (c.status !== "match") {
-                  toExpand.add(c.emailId);
+                if (c.status === "different") {
+                  const type = c.runATransaction?.type || c.runBTransaction?.type || "unknown";
+                  types.add(type);
                 }
               });
-              setExpandedItems(toExpand);
+              setExpandedTypes(types);
             }
           } catch (error) {
             console.error("Failed to load comparison:", error);
@@ -179,14 +206,15 @@ function ComparePageContent() {
       const data = await res.json();
       if (res.ok) {
         setComparison(data);
-        // Auto-expand items with differences
-        const toExpand = new Set<string>();
+        // Auto-expand all type groups
+        const types = new Set<string>();
         data.comparisons.forEach((c: TransactionComparison) => {
-          if (c.status !== "match") {
-            toExpand.add(c.emailId);
+          if (c.status === "different") {
+            const type = c.runATransaction?.type || c.runBTransaction?.type || "unknown";
+            types.add(type);
           }
         });
-        setExpandedItems(toExpand);
+        setExpandedTypes(types);
       } else {
         toast.error(data.error || "Failed to compare runs");
       }
@@ -212,8 +240,12 @@ function ComparePageContent() {
       });
 
       if (res.ok) {
-        toast.success(winnerTransactionId ? "Winner set" : "Winner cleared");
-        // Refresh comparison to show updated winner
+        const message = !winnerTransactionId
+          ? "Winner cleared"
+          : winnerTransactionId === "tie"
+            ? "Marked as tie"
+            : "Winner set";
+        toast.success(message);
         fetchComparison();
       } else {
         const data = await res.json();
@@ -224,16 +256,57 @@ function ComparePageContent() {
     }
   };
 
+  const bulkDesignateWinner = async (
+    items: TransactionComparison[],
+    winnerType: "a" | "b" | "tie"
+  ) => {
+    const typeKey = items[0]?.runATransaction?.type || items[0]?.runBTransaction?.type || "unknown";
+    setBulkLoading((prev) => new Set(prev).add(typeKey));
+
+    try {
+      const updates = items.map((item) => ({
+        emailId: item.emailId,
+        winnerTransactionId:
+          winnerType === "tie"
+            ? "tie"
+            : winnerType === "a"
+              ? item.runATransaction?.id || null
+              : item.runBTransaction?.id || null,
+      }));
+
+      const res = await fetch("/api/compare", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(data.message);
+        fetchComparison();
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to bulk set winners");
+      }
+    } catch (error) {
+      toast.error("Failed to bulk set winners");
+    } finally {
+      setBulkLoading((prev) => {
+        const next = new Set(prev);
+        next.delete(typeKey);
+        return next;
+      });
+    }
+  };
+
   const toggleEmailPreview = async (emailId: string) => {
     if (expandedEmailPreviews.has(emailId)) {
-      // Collapse
       setExpandedEmailPreviews((prev) => {
         const next = new Set(prev);
         next.delete(emailId);
         return next;
       });
     } else {
-      // Expand and fetch content if not cached
       setExpandedEmailPreviews((prev) => new Set(prev).add(emailId));
 
       if (!emailContents.has(emailId)) {
@@ -278,6 +351,18 @@ function ComparePageContent() {
     });
   };
 
+  const toggleTypeExpanded = (type: string) => {
+    setExpandedTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) {
+        next.delete(type);
+      } else {
+        next.add(type);
+      }
+      return next;
+    });
+  };
+
   const getStatusBadge = (status: TransactionComparison["status"]) => {
     switch (status) {
       case "match":
@@ -309,6 +394,35 @@ function ComparePageContent() {
     }
   };
 
+  const getWinnerBadge = (item: TransactionComparison) => {
+    if (!item.winnerTransactionId) return null;
+
+    if (item.winnerTransactionId === "tie") {
+      return (
+        <Badge variant="secondary" className="bg-gray-100 text-gray-800 gap-1">
+          <Equal className="h-3 w-3" />
+          Tie
+        </Badge>
+      );
+    }
+
+    if (item.winnerTransactionId === item.runATransaction?.id) {
+      return (
+        <Badge variant="secondary" className="bg-green-100 text-green-800 gap-1">
+          <Trophy className="h-3 w-3" />
+          A wins
+        </Badge>
+      );
+    }
+
+    return (
+      <Badge variant="secondary" className="bg-green-100 text-green-800 gap-1">
+        <Trophy className="h-3 w-3" />
+        B wins
+      </Badge>
+    );
+  };
+
   const formatValue = (value: unknown): string => {
     if (value === null || value === undefined) return "-";
     if (typeof value === "number" || !isNaN(Number(value))) {
@@ -324,6 +438,13 @@ function ComparePageContent() {
       }
     }
     return String(value);
+  };
+
+  const formatTypeName = (type: string): string => {
+    return type
+      .split("_")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ");
   };
 
   const renderTransactionDetail = (
@@ -356,6 +477,253 @@ function ComparePageContent() {
     const modelName = run.modelId?.split("-").slice(0, 2).join(" ") || "Unknown";
     return `v${run.version} - ${modelName} (${run.transactionsCreated} txns)`;
   };
+
+  const renderComparisonItem = (item: TransactionComparison, showTypeColumn = false) => (
+    <Card
+      key={item.emailId}
+      className={
+        item.winnerTransactionId
+          ? item.winnerTransactionId === "tie"
+            ? "border-gray-300 bg-gray-50/50"
+            : "border-green-300 bg-green-50/50"
+          : ""
+      }
+    >
+      <Collapsible open={expandedItems.has(item.emailId)} onOpenChange={() => toggleExpanded(item.emailId)}>
+        <CollapsibleTrigger asChild>
+          <CardHeader className="cursor-pointer hover:bg-gray-50 transition-colors py-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <ChevronDown
+                  className={`h-4 w-4 text-gray-400 transition-transform flex-shrink-0 ${
+                    expandedItems.has(item.emailId) ? "rotate-180" : ""
+                  }`}
+                />
+                <span className="text-sm font-medium truncate">
+                  {item.emailSubject || "No subject"}
+                </span>
+                {showTypeColumn && (
+                  <Badge variant="outline" className="text-xs">
+                    {formatTypeName(item.runATransaction?.type || item.runBTransaction?.type || "unknown")}
+                  </Badge>
+                )}
+                <Link
+                  href={`/emails/${item.emailId}?from=compare&runA=${runAId}&runB=${runBId}`}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-gray-500 hover:text-blue-600"
+                    title="View in email detail page"
+                  >
+                    <Eye className="h-4 w-4" />
+                  </Button>
+                </Link>
+              </div>
+              <div className="flex items-center gap-2">
+                {getWinnerBadge(item)}
+                {getStatusBadge(item.status)}
+              </div>
+            </div>
+          </CardHeader>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <CardContent className="pt-0 pb-4">
+            {/* Side by side comparison */}
+            <div className="border rounded-lg overflow-hidden">
+              <div className="grid grid-cols-3 gap-4 py-2 px-3 bg-gray-100 border-b font-medium text-sm">
+                <div>Field</div>
+                <div className="text-blue-700">Run A</div>
+                <div className="text-purple-700">Run B</div>
+              </div>
+
+              {renderTransactionDetail(
+                "Type",
+                item.runATransaction?.type,
+                item.runBTransaction?.type,
+                item.differences.includes("type")
+              )}
+              {renderTransactionDetail(
+                "Amount",
+                item.runATransaction?.amount,
+                item.runBTransaction?.amount,
+                item.differences.includes("amount")
+              )}
+              {renderTransactionDetail(
+                "Currency",
+                item.runATransaction?.currency,
+                item.runBTransaction?.currency,
+                item.differences.includes("currency")
+              )}
+              {renderTransactionDetail(
+                "Symbol",
+                item.runATransaction?.symbol,
+                item.runBTransaction?.symbol,
+                item.differences.includes("symbol")
+              )}
+              {renderTransactionDetail(
+                "Quantity",
+                item.runATransaction?.quantity,
+                item.runBTransaction?.quantity,
+                item.differences.includes("quantity")
+              )}
+              {renderTransactionDetail(
+                "Price",
+                item.runATransaction?.price,
+                item.runBTransaction?.price,
+                item.differences.includes("price")
+              )}
+              {renderTransactionDetail(
+                "Fees",
+                item.runATransaction?.fees,
+                item.runBTransaction?.fees,
+                item.differences.includes("fees")
+              )}
+              {renderTransactionDetail(
+                "Date",
+                item.runATransaction?.date,
+                item.runBTransaction?.date,
+                item.differences.includes("date")
+              )}
+              {renderTransactionDetail(
+                "Confidence",
+                item.runATransaction?.confidence
+                  ? `${(parseFloat(item.runATransaction.confidence) * 100).toFixed(0)}%`
+                  : null,
+                item.runBTransaction?.confidence
+                  ? `${(parseFloat(item.runBTransaction.confidence) * 100).toFixed(0)}%`
+                  : null,
+                false
+              )}
+            </div>
+
+            {/* View Email button and preview */}
+            <div className="mt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2 mb-3"
+                onClick={() => toggleEmailPreview(item.emailId)}
+              >
+                {loadingEmails.has(item.emailId) ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Mail className="h-4 w-4" />
+                )}
+                {expandedEmailPreviews.has(item.emailId) ? "Hide" : "View"} Original Email
+                {expandedEmailPreviews.has(item.emailId) ? (
+                  <ChevronUp className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+              </Button>
+
+              {expandedEmailPreviews.has(item.emailId) && (
+                <div className="mb-4 border rounded-lg overflow-hidden bg-white">
+                  <div className="px-3 py-2 bg-gray-100 border-b text-sm font-medium text-gray-700">
+                    Original Email Content
+                  </div>
+                  {loadingEmails.has(item.emailId) ? (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                      <span className="ml-2 text-gray-500">Loading email...</span>
+                    </div>
+                  ) : emailContents.has(item.emailId) ? (
+                    <div className="max-h-96 overflow-auto">
+                      {emailContents.get(item.emailId)?.bodyHtml ? (
+                        <iframe
+                          srcDoc={emailContents.get(item.emailId)?.bodyHtml || ""}
+                          sandbox="allow-same-origin"
+                          className="w-full min-h-[300px] border-0"
+                          style={{ height: "400px" }}
+                          title="Email content"
+                        />
+                      ) : emailContents.get(item.emailId)?.bodyText ? (
+                        <pre className="p-4 text-sm whitespace-pre-wrap font-mono text-gray-700">
+                          {emailContents.get(item.emailId)?.bodyText}
+                        </pre>
+                      ) : (
+                        <div className="p-4 text-sm text-gray-500 italic">
+                          No email content available
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="p-4 text-sm text-gray-500 italic">
+                      Failed to load email content
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Winner designation buttons */}
+            <div className="flex items-center gap-4 flex-wrap">
+              <span className="text-sm font-medium text-gray-600">Designate winner:</span>
+              <div className="flex gap-2 flex-wrap">
+                <Button
+                  size="sm"
+                  variant={item.winnerTransactionId === item.runATransaction?.id ? "default" : "outline"}
+                  className={`gap-1 ${
+                    item.winnerTransactionId === item.runATransaction?.id
+                      ? "bg-blue-600 hover:bg-blue-700"
+                      : "border-blue-300 text-blue-700 hover:bg-blue-50"
+                  }`}
+                  onClick={() =>
+                    designateWinner(item.emailId, item.runATransaction?.id || null)
+                  }
+                  disabled={!item.runATransaction}
+                >
+                  <Trophy className="h-3 w-3" />
+                  Run A
+                </Button>
+                <Button
+                  size="sm"
+                  variant={item.winnerTransactionId === item.runBTransaction?.id ? "default" : "outline"}
+                  className={`gap-1 ${
+                    item.winnerTransactionId === item.runBTransaction?.id
+                      ? "bg-purple-600 hover:bg-purple-700"
+                      : "border-purple-300 text-purple-700 hover:bg-purple-50"
+                  }`}
+                  onClick={() =>
+                    designateWinner(item.emailId, item.runBTransaction?.id || null)
+                  }
+                  disabled={!item.runBTransaction}
+                >
+                  <Trophy className="h-3 w-3" />
+                  Run B
+                </Button>
+                <Button
+                  size="sm"
+                  variant={item.winnerTransactionId === "tie" ? "default" : "outline"}
+                  className={`gap-1 ${
+                    item.winnerTransactionId === "tie"
+                      ? "bg-gray-600 hover:bg-gray-700"
+                      : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                  }`}
+                  onClick={() => designateWinner(item.emailId, "tie")}
+                >
+                  <Equal className="h-3 w-3" />
+                  Tie
+                </Button>
+                {item.winnerTransactionId && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-gray-500"
+                    onClick={() => designateWinner(item.emailId, null)}
+                  >
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </CollapsibleContent>
+      </Collapsible>
+    </Card>
+  );
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -467,18 +835,19 @@ function ComparePageContent() {
             </div>
 
             {/* Progress of winners */}
-            {comparison.summary.different > 0 && (
+            {(comparison.summary.different > 0 || comparison.summary.onlyA > 0 || comparison.summary.onlyB > 0) && (
               <Card className="mb-8 border-orange-200 bg-orange-50">
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Trophy className="h-5 w-5 text-orange-600" />
                       <span className="font-medium text-orange-800">
-                        Winners Designated: {comparison.summary.winnersDesignated} / {comparison.summary.different + comparison.summary.onlyA + comparison.summary.onlyB}
+                        Winners Designated: {comparison.summary.winnersDesignated} /{" "}
+                        {comparison.summary.different + comparison.summary.onlyA + comparison.summary.onlyB}
                       </span>
                     </div>
                     <div className="text-sm text-orange-600">
-                      Click the trophy buttons below to mark correct extractions
+                      Use bulk actions or individual buttons to mark correct extractions
                     </div>
                   </div>
                 </CardContent>
@@ -498,246 +867,156 @@ function ComparePageContent() {
               </div>
             </div>
 
-            {/* Comparison Items */}
-            <div className="space-y-3">
-              {comparison.comparisons.map((item) => (
-                <Card key={item.emailId} className={item.winnerTransactionId ? "border-green-300 bg-green-50/50" : ""}>
-                  <Collapsible open={expandedItems.has(item.emailId)} onOpenChange={() => toggleExpanded(item.emailId)}>
-                    <CollapsibleTrigger asChild>
-                      <CardHeader className="cursor-pointer hover:bg-gray-50 transition-colors py-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3 flex-1 min-w-0">
-                            <ChevronDown
-                              className={`h-4 w-4 text-gray-400 transition-transform ${
-                                expandedItems.has(item.emailId) ? "rotate-180" : ""
-                              }`}
-                            />
-                            <span className="text-sm font-medium truncate">
-                              {item.emailSubject || "No subject"}
-                            </span>
-                            <Link
-                              href={`/emails/${item.emailId}?from=compare&runA=${runAId}&runB=${runBId}`}
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 px-2 text-gray-500 hover:text-blue-600"
-                                title="View original email"
-                              >
-                                <Eye className="h-4 w-4" />
-                              </Button>
-                            </Link>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {item.winnerTransactionId && (
-                              <Badge variant="secondary" className="bg-green-100 text-green-800 gap-1">
-                                <Trophy className="h-3 w-3" />
-                                {item.winnerTransactionId === item.runATransaction?.id ? "A" : "B"} wins
-                              </Badge>
-                            )}
-                            {getStatusBadge(item.status)}
-                          </div>
-                        </div>
-                      </CardHeader>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      <CardContent className="pt-0 pb-4">
-                        {/* Side by side comparison */}
-                        <div className="border rounded-lg overflow-hidden">
-                          {/* Header row */}
-                          <div className="grid grid-cols-3 gap-4 py-2 px-3 bg-gray-100 border-b font-medium text-sm">
-                            <div>Field</div>
-                            <div className="text-blue-700">Run A</div>
-                            <div className="text-purple-700">Run B</div>
-                          </div>
+            {/* SECTION: Different Transactions (grouped by type) */}
+            {differentByType.size > 0 && (
+              <div className="mb-8">
+                <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                  <Layers className="h-5 w-5 text-yellow-600" />
+                  Different Transactions ({comparison.summary.different})
+                </h2>
+                <p className="text-sm text-gray-600 mb-4">
+                  These transactions exist in both runs but have different values. Grouped by transaction type.
+                </p>
 
-                          {/* Data rows */}
-                          {renderTransactionDetail(
-                            "Type",
-                            item.runATransaction?.type,
-                            item.runBTransaction?.type,
-                            item.differences.includes("type")
-                          )}
-                          {renderTransactionDetail(
-                            "Amount",
-                            item.runATransaction?.amount,
-                            item.runBTransaction?.amount,
-                            item.differences.includes("amount")
-                          )}
-                          {renderTransactionDetail(
-                            "Currency",
-                            item.runATransaction?.currency,
-                            item.runBTransaction?.currency,
-                            item.differences.includes("currency")
-                          )}
-                          {renderTransactionDetail(
-                            "Symbol",
-                            item.runATransaction?.symbol,
-                            item.runBTransaction?.symbol,
-                            item.differences.includes("symbol")
-                          )}
-                          {renderTransactionDetail(
-                            "Quantity",
-                            item.runATransaction?.quantity,
-                            item.runBTransaction?.quantity,
-                            item.differences.includes("quantity")
-                          )}
-                          {renderTransactionDetail(
-                            "Price",
-                            item.runATransaction?.price,
-                            item.runBTransaction?.price,
-                            item.differences.includes("price")
-                          )}
-                          {renderTransactionDetail(
-                            "Fees",
-                            item.runATransaction?.fees,
-                            item.runBTransaction?.fees,
-                            item.differences.includes("fees")
-                          )}
-                          {renderTransactionDetail(
-                            "Date",
-                            item.runATransaction?.date,
-                            item.runBTransaction?.date,
-                            item.differences.includes("date")
-                          )}
-                          {renderTransactionDetail(
-                            "Confidence",
-                            item.runATransaction?.confidence ? `${(parseFloat(item.runATransaction.confidence) * 100).toFixed(0)}%` : null,
-                            item.runBTransaction?.confidence ? `${(parseFloat(item.runBTransaction.confidence) * 100).toFixed(0)}%` : null,
-                            false
-                          )}
-                        </div>
+                <div className="space-y-4">
+                  {Array.from(differentByType.entries()).map(([type, items]) => {
+                    const resolvedCount = items.filter((i) => i.winnerTransactionId).length;
+                    const typeKey = type;
 
-                        {/* View Email button and preview */}
-                        {item.status !== "match" && (
-                          <div className="mt-4">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="gap-2 mb-3"
-                              onClick={() => toggleEmailPreview(item.emailId)}
-                            >
-                              {loadingEmails.has(item.emailId) ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <Mail className="h-4 w-4" />
-                              )}
-                              {expandedEmailPreviews.has(item.emailId) ? "Hide" : "View"} Original Email
-                              {expandedEmailPreviews.has(item.emailId) ? (
-                                <ChevronUp className="h-4 w-4" />
-                              ) : (
-                                <ChevronDown className="h-4 w-4" />
-                              )}
-                            </Button>
-
-                            {expandedEmailPreviews.has(item.emailId) && (
-                              <div className="mb-4 border rounded-lg overflow-hidden bg-white">
-                                <div className="px-3 py-2 bg-gray-100 border-b text-sm font-medium text-gray-700">
-                                  Original Email Content
+                    return (
+                      <Card key={type} className="border-yellow-200">
+                        <Collapsible
+                          open={expandedTypes.has(type)}
+                          onOpenChange={() => toggleTypeExpanded(type)}
+                        >
+                          <CollapsibleTrigger asChild>
+                            <CardHeader className="cursor-pointer hover:bg-yellow-50 transition-colors">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <ChevronDown
+                                    className={`h-5 w-5 text-gray-400 transition-transform ${
+                                      expandedTypes.has(type) ? "rotate-180" : ""
+                                    }`}
+                                  />
+                                  <CardTitle className="text-lg">{formatTypeName(type)}</CardTitle>
+                                  <Badge variant="secondary" className="bg-yellow-100 text-yellow-800">
+                                    {items.length} items
+                                  </Badge>
+                                  <Badge
+                                    variant="secondary"
+                                    className={
+                                      resolvedCount === items.length
+                                        ? "bg-green-100 text-green-800"
+                                        : "bg-gray-100 text-gray-600"
+                                    }
+                                  >
+                                    {resolvedCount}/{items.length} resolved
+                                  </Badge>
                                 </div>
-                                {loadingEmails.has(item.emailId) ? (
-                                  <div className="flex items-center justify-center py-12">
-                                    <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
-                                    <span className="ml-2 text-gray-500">Loading email...</span>
-                                  </div>
-                                ) : emailContents.has(item.emailId) ? (
-                                  <div className="max-h-96 overflow-auto">
-                                    {emailContents.get(item.emailId)?.bodyHtml ? (
-                                      <iframe
-                                        srcDoc={emailContents.get(item.emailId)?.bodyHtml || ""}
-                                        sandbox="allow-same-origin"
-                                        className="w-full min-h-[300px] border-0"
-                                        style={{ height: "400px" }}
-                                        title="Email content"
-                                      />
-                                    ) : emailContents.get(item.emailId)?.bodyText ? (
-                                      <pre className="p-4 text-sm whitespace-pre-wrap font-mono text-gray-700">
-                                        {emailContents.get(item.emailId)?.bodyText}
-                                      </pre>
-                                    ) : (
-                                      <div className="p-4 text-sm text-gray-500 italic">
-                                        No email content available
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <div className="p-4 text-sm text-gray-500 italic">
-                                    Failed to load email content
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Winner designation buttons */}
-                        {item.status !== "match" && (
-                          <div className="flex items-center gap-4">
-                            <span className="text-sm font-medium text-gray-600">Designate winner:</span>
-                            <div className="flex gap-2">
-                              <Button
-                                size="sm"
-                                variant={item.winnerTransactionId === item.runATransaction?.id ? "default" : "outline"}
-                                className={`gap-1 ${
-                                  item.winnerTransactionId === item.runATransaction?.id
-                                    ? "bg-blue-600 hover:bg-blue-700"
-                                    : "border-blue-300 text-blue-700 hover:bg-blue-50"
-                                }`}
-                                onClick={() =>
-                                  designateWinner(
-                                    item.emailId,
-                                    item.runATransaction?.id || null
-                                  )
-                                }
-                                disabled={!item.runATransaction}
-                              >
-                                <Trophy className="h-3 w-3" />
-                                Run A Wins
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant={item.winnerTransactionId === item.runBTransaction?.id ? "default" : "outline"}
-                                className={`gap-1 ${
-                                  item.winnerTransactionId === item.runBTransaction?.id
-                                    ? "bg-purple-600 hover:bg-purple-700"
-                                    : "border-purple-300 text-purple-700 hover:bg-purple-50"
-                                }`}
-                                onClick={() =>
-                                  designateWinner(
-                                    item.emailId,
-                                    item.runBTransaction?.id || null
-                                  )
-                                }
-                                disabled={!item.runBTransaction}
-                              >
-                                <Trophy className="h-3 w-3" />
-                                Run B Wins
-                              </Button>
-                              {item.winnerTransactionId && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="text-gray-500"
-                                  onClick={() => designateWinner(item.emailId, null)}
+                                {/* Bulk action buttons */}
+                                <div
+                                  className="flex items-center gap-2"
+                                  onClick={(e) => e.stopPropagation()}
                                 >
-                                  Clear
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </CardContent>
-                    </CollapsibleContent>
-                  </Collapsible>
-                </Card>
-              ))}
-            </div>
+                                  <span className="text-xs text-gray-500 mr-2">Set all to:</span>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs border-blue-300 text-blue-700 hover:bg-blue-50"
+                                    onClick={() => bulkDesignateWinner(items, "a")}
+                                    disabled={bulkLoading.has(typeKey)}
+                                  >
+                                    {bulkLoading.has(typeKey) ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      <>
+                                        <Trophy className="h-3 w-3 mr-1" />A
+                                      </>
+                                    )}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs border-purple-300 text-purple-700 hover:bg-purple-50"
+                                    onClick={() => bulkDesignateWinner(items, "b")}
+                                    disabled={bulkLoading.has(typeKey)}
+                                  >
+                                    {bulkLoading.has(typeKey) ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      <>
+                                        <Trophy className="h-3 w-3 mr-1" />B
+                                      </>
+                                    )}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs border-gray-300 text-gray-700 hover:bg-gray-50"
+                                    onClick={() => bulkDesignateWinner(items, "tie")}
+                                    disabled={bulkLoading.has(typeKey)}
+                                  >
+                                    {bulkLoading.has(typeKey) ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      <>
+                                        <Equal className="h-3 w-3 mr-1" />
+                                        Tie
+                                      </>
+                                    )}
+                                  </Button>
+                                </div>
+                              </div>
+                            </CardHeader>
+                          </CollapsibleTrigger>
+                          <CollapsibleContent>
+                            <CardContent className="pt-0 space-y-3">
+                              {items.map((item) => renderComparisonItem(item))}
+                            </CardContent>
+                          </CollapsibleContent>
+                        </Collapsible>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* SECTION: Exclusive Transactions */}
+            {exclusiveItems.length > 0 && (
+              <div className="mb-8">
+                <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                  <ArrowLeftRight className="h-5 w-5 text-blue-600" />
+                  Exclusive Transactions ({exclusiveItems.length})
+                </h2>
+                <p className="text-sm text-gray-600 mb-4">
+                  These transactions exist in only one run. Designate which run&apos;s extraction is correct.
+                </p>
+
+                <div className="space-y-3">
+                  {exclusiveItems.map((item) => renderComparisonItem(item, true))}
+                </div>
+              </div>
+            )}
 
             {comparison.comparisons.length === 0 && (
               <Card>
                 <CardContent className="py-8 text-center text-gray-500">
                   No overlapping emails found between these runs.
+                </CardContent>
+              </Card>
+            )}
+
+            {comparison.summary.matches > 0 && (
+              <Card className="border-green-200 bg-green-50/30">
+                <CardContent className="py-6 text-center">
+                  <CheckCircle2 className="h-8 w-8 mx-auto text-green-600 mb-2" />
+                  <p className="text-green-800 font-medium">
+                    {comparison.summary.matches} transactions match perfectly between runs
+                  </p>
+                  <p className="text-sm text-green-600 mt-1">
+                    These are not shown as they don&apos;t require review
+                  </p>
                 </CardContent>
               </Card>
             )}

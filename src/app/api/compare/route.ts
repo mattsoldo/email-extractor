@@ -220,8 +220,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate transaction if provided
-    if (winnerTransactionId) {
+    // Validate transaction if provided (skip validation for special "tie" value)
+    if (winnerTransactionId && winnerTransactionId !== "tie") {
       const txn = await db
         .select()
         .from(transactions)
@@ -249,8 +249,14 @@ export async function POST(request: NextRequest) {
       .set({ winnerTransactionId: winnerTransactionId || null })
       .where(eq(emails.id, emailId));
 
+    const message = !winnerTransactionId
+      ? "Winner cleared"
+      : winnerTransactionId === "tie"
+        ? "Marked as tie"
+        : "Winner set";
+
     return NextResponse.json({
-      message: winnerTransactionId ? "Winner set" : "Winner cleared",
+      message,
       emailId,
       winnerTransactionId,
     });
@@ -258,6 +264,58 @@ export async function POST(request: NextRequest) {
     console.error("Set winner error:", error);
     return NextResponse.json(
       { error: "Failed to set winner" },
+      { status: 500 }
+    );
+  }
+}
+
+// PUT /api/compare - Bulk set winners for multiple emails
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { updates } = body as {
+      updates: Array<{ emailId: string; winnerTransactionId: string | null }>;
+    };
+
+    if (!updates || !Array.isArray(updates) || updates.length === 0) {
+      return NextResponse.json(
+        { error: "updates array is required" },
+        { status: 400 }
+      );
+    }
+
+    // Validate all emails exist
+    const emailIds = updates.map((u) => u.emailId);
+    const existingEmails = await db
+      .select({ id: emails.id })
+      .from(emails)
+      .where(inArray(emails.id, emailIds));
+
+    if (existingEmails.length !== emailIds.length) {
+      return NextResponse.json(
+        { error: "Some emails not found" },
+        { status: 404 }
+      );
+    }
+
+    // Perform bulk update
+    let successCount = 0;
+    for (const update of updates) {
+      await db
+        .update(emails)
+        .set({ winnerTransactionId: update.winnerTransactionId || null })
+        .where(eq(emails.id, update.emailId));
+      successCount++;
+    }
+
+    return NextResponse.json({
+      message: `Updated ${successCount} emails`,
+      count: successCount,
+    });
+  } catch (error) {
+    console.error("Bulk set winner error:", error);
+    return NextResponse.json(
+      { error: "Failed to bulk set winners" },
       { status: 500 }
     );
   }

@@ -26,6 +26,7 @@ import {
   History,
   ExternalLink,
   MessageCircle,
+  StopCircle,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -78,6 +79,27 @@ export default function RunDetailPage() {
   const [run, setRun] = useState<ExtractionRun | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [cancelling, setCancelling] = useState(false);
+
+  const handleCancel = async () => {
+    if (!run || cancelling) return;
+
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/runs/${runId}/cancel`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to cancel run");
+      }
+      // Refresh to get updated status
+      await fetchRunDetails();
+    } catch (error) {
+      console.error("Failed to cancel run:", error);
+      alert(error instanceof Error ? error.message : "Failed to cancel run");
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   const fetchRunDetails = useCallback(async (isPolling = false) => {
     if (!isPolling) {
@@ -131,6 +153,13 @@ export default function RunDetailPage() {
           <Badge className="bg-red-100 text-red-800 gap-1">
             <XCircle className="h-3 w-3" />
             Failed
+          </Badge>
+        );
+      case "cancelled":
+        return (
+          <Badge className="bg-orange-100 text-orange-800 gap-1">
+            <StopCircle className="h-3 w-3" />
+            Cancelled
           </Badge>
         );
       case "running":
@@ -215,14 +244,32 @@ export default function RunDetailPage() {
               {getStatusBadge(run.status)}
             </div>
           </div>
-          {run.jobId && (
-            <Link href={`/jobs/${run.jobId}`}>
-              <Button variant="outline" size="sm" className="gap-2">
-                <ExternalLink className="h-4 w-4" />
-                View Job
+          <div className="flex items-center gap-2">
+            {run.status === "running" && (
+              <Button
+                variant="destructive"
+                size="sm"
+                className="gap-2"
+                onClick={handleCancel}
+                disabled={cancelling}
+              >
+                {cancelling ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <StopCircle className="h-4 w-4" />
+                )}
+                Cancel Run
               </Button>
-            </Link>
-          )}
+            )}
+            {run.jobId && (
+              <Link href={`/jobs/${run.jobId}`}>
+                <Button variant="outline" size="sm" className="gap-2">
+                  <ExternalLink className="h-4 w-4" />
+                  View Job
+                </Button>
+              </Link>
+            )}
+          </div>
         </div>
 
         {/* Stats Grid */}

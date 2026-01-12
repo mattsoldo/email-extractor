@@ -244,9 +244,16 @@ export const extractionProcessEmail = inngest.createFunction(
     retries: 3,
     // Concurrency limit - Inngest will queue excess invocations
     concurrency: {
-      limit: 5, // Conservative default, respects most API rate limits
+      limit: 75, // Anthropic paid tier allows ~100 concurrent requests
       key: "event.data.runId", // Partition by run so different runs don't block each other
     },
+    // Cancel queued jobs when run is cancelled
+    cancelOn: [
+      {
+        event: "extraction/cancel",
+        match: "data.runId",
+      },
+    ],
   },
   { event: "extraction/process-email" },
   async ({ event, step }) => {

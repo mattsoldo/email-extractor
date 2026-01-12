@@ -41,9 +41,17 @@ export interface ExtractionResumeEvent {
   };
 }
 
+export interface ExtractionCancelEvent {
+  name: "extraction/cancel";
+  data: {
+    runId: string;
+  };
+}
+
 // Union of all events
 export type InngestEvents = {
   "extraction/started": ExtractionStartedEvent;
   "extraction/process-email": ExtractionProcessEmailEvent;
   "extraction/resume": ExtractionResumeEvent;
+  "extraction/cancel": ExtractionCancelEvent;
 };

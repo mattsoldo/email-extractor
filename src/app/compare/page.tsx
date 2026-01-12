@@ -168,15 +168,8 @@ function ComparePageContent() {
             const data = await res.json();
             if (res.ok) {
               setComparison(data);
-              // Auto-expand all type groups
-              const types = new Set<string>();
-              data.comparisons.forEach((c: TransactionComparison) => {
-                if (c.status === "different") {
-                  const type = c.runATransaction?.type || c.runBTransaction?.type || "unknown";
-                  types.add(type);
-                }
-              });
-              setExpandedTypes(types);
+              // Start with all type groups collapsed
+              setExpandedTypes(new Set());
             }
           } catch (error) {
             console.error("Failed to load comparison:", error);
@@ -206,15 +199,8 @@ function ComparePageContent() {
       const data = await res.json();
       if (res.ok) {
         setComparison(data);
-        // Auto-expand all type groups
-        const types = new Set<string>();
-        data.comparisons.forEach((c: TransactionComparison) => {
-          if (c.status === "different") {
-            const type = c.runATransaction?.type || c.runBTransaction?.type || "unknown";
-            types.add(type);
-          }
-        });
-        setExpandedTypes(types);
+        // Start with all type groups collapsed
+        setExpandedTypes(new Set());
       } else {
         toast.error(data.error || "Failed to compare runs");
       }
@@ -382,13 +368,13 @@ function ComparePageContent() {
       case "only_a":
         return (
           <Badge variant="secondary" className="bg-blue-100 text-blue-800">
-            Only in Run A
+            Only in {runALabel}
           </Badge>
         );
       case "only_b":
         return (
           <Badge variant="secondary" className="bg-purple-100 text-purple-800">
-            Only in Run B
+            Only in {runBLabel}
           </Badge>
         );
     }
@@ -410,7 +396,7 @@ function ComparePageContent() {
       return (
         <Badge variant="secondary" className="bg-green-100 text-green-800 gap-1">
           <Trophy className="h-3 w-3" />
-          A wins
+          {runALabel} wins
         </Badge>
       );
     }
@@ -418,7 +404,7 @@ function ComparePageContent() {
     return (
       <Badge variant="secondary" className="bg-green-100 text-green-800 gap-1">
         <Trophy className="h-3 w-3" />
-        B wins
+        {runBLabel} wins
       </Badge>
     );
   };
@@ -478,6 +464,17 @@ function ComparePageContent() {
     return `v${run.version} - ${modelName} (${run.transactionsCreated} txns)`;
   };
 
+  // Short label for display in comparison UI (e.g., "v11 (Claude)")
+  const getShortRunLabel = (run: ExtractionRun | null | undefined) => {
+    if (!run) return "Unknown";
+    const modelShort = run.modelId?.split("-")[0] || "Unknown";
+    return `v${run.version} (${modelShort})`;
+  };
+
+  // Get labels for the two runs being compared
+  const runALabel = comparison ? getShortRunLabel(comparison.runA) : "Run A";
+  const runBLabel = comparison ? getShortRunLabel(comparison.runB) : "Run B";
+
   const renderComparisonItem = (item: TransactionComparison, showTypeColumn = false) => (
     <Card
       key={item.emailId}
@@ -534,8 +531,8 @@ function ComparePageContent() {
             <div className="border rounded-lg overflow-hidden">
               <div className="grid grid-cols-3 gap-4 py-2 px-3 bg-gray-100 border-b font-medium text-sm">
                 <div>Field</div>
-                <div className="text-blue-700">Run A</div>
-                <div className="text-purple-700">Run B</div>
+                <div className="text-blue-700">{runALabel}</div>
+                <div className="text-purple-700">{runBLabel}</div>
               </div>
 
               {renderTransactionDetail(
@@ -676,7 +673,7 @@ function ComparePageContent() {
                   disabled={!item.runATransaction}
                 >
                   <Trophy className="h-3 w-3" />
-                  Run A
+                  {runALabel}
                 </Button>
                 <Button
                   size="sm"
@@ -692,7 +689,7 @@ function ComparePageContent() {
                   disabled={!item.runBTransaction}
                 >
                   <Trophy className="h-3 w-3" />
-                  Run B
+                  {runBLabel}
                 </Button>
                 <Button
                   size="sm"
@@ -859,11 +856,11 @@ function ComparePageContent() {
               <div className="text-sm font-medium text-gray-500">Email</div>
               <div className="text-sm font-medium text-blue-700 flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-blue-500" />
-                Run A: {comparison.runA.modelId?.split("-")[0] || "Unknown"} v{comparison.runA.version}
+                {runALabel}
               </div>
               <div className="text-sm font-medium text-purple-700 flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-purple-500" />
-                Run B: {comparison.runB.modelId?.split("-")[0] || "Unknown"} v{comparison.runB.version}
+                {runBLabel}
               </div>
             </div>
 
@@ -930,7 +927,7 @@ function ComparePageContent() {
                                       <Loader2 className="h-3 w-3 animate-spin" />
                                     ) : (
                                       <>
-                                        <Trophy className="h-3 w-3 mr-1" />A
+                                        <Trophy className="h-3 w-3 mr-1" />{runALabel}
                                       </>
                                     )}
                                   </Button>
@@ -945,7 +942,7 @@ function ComparePageContent() {
                                       <Loader2 className="h-3 w-3 animate-spin" />
                                     ) : (
                                       <>
-                                        <Trophy className="h-3 w-3 mr-1" />B
+                                        <Trophy className="h-3 w-3 mr-1" />{runBLabel}
                                       </>
                                     )}
                                   </Button>

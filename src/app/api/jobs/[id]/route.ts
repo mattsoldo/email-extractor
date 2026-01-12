@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { jobs, extractionLogs, transactions, accounts, extractionRuns, aiModels } from "@/db/schema";
 import { eq, desc, and } from "drizzle-orm";
 import { getJobProgress, cancelJob } from "@/services/job-manager";
+import { inngest } from "@/inngest/client";
 
 // GET /api/jobs/[id] - Get job details with logs
 export async function GET(
@@ -147,6 +148,15 @@ export async function DELETE(
   if (cancelled || extractionRun) {
     // If there's an extraction run, clean up transactions and update status
     if (extractionRun) {
+      // Send cancel event to Inngest to cancel all queued email processors
+      await inngest.send({
+        name: "extraction/cancel",
+        data: {
+          runId: extractionRun.id,
+        },
+      });
+      console.log(`[Cancel Job] Sent Inngest cancel event for run ${extractionRun.id}`);
+
       // Delete all transactions created during this run
       const deletedTransactions = await db
         .delete(transactions)

@@ -6,6 +6,7 @@ import {
   accounts,
   extractionRuns,
   emailExtractions,
+  extractionLogs,
   prompts,
   aiModels,
   jobs,
@@ -431,7 +432,31 @@ export const extractionJob = inngest.createFunction(
         let batchFailed = 0;
         let batchInformational = 0;
 
-        for (const result of results) {
+        // Track error logs to insert
+        const errorLogsToInsert: Array<{
+          id: string;
+          emailId: string;
+          jobId: string | null;
+          level: "error";
+          message: string;
+          errorType: string;
+          stackTrace: string | null;
+          metadata: Record<string, unknown>;
+        }> = [];
+
+        // Get job ID for error logging
+        const [runForJob] = await db
+          .select({ jobId: extractionRuns.jobId })
+          .from(extractionRuns)
+          .where(eq(extractionRuns.id, runInfo.extractionRunId))
+          .limit(1);
+        const jobId = runForJob?.jobId || null;
+
+        // Process results - use index to map back to original email
+        for (let i = 0; i < results.length; i++) {
+          const result = results[i];
+          const originalEmail = batchEmails[i];
+
           if (result.status === "fulfilled") {
             const { email, extraction, startTime, endTime } = result.value;
 
@@ -518,7 +543,48 @@ export const extractionJob = inngest.createFunction(
               batchInformational++;
             }
           } else {
+            // Promise was rejected - log the error
             batchFailed++;
+            const error = result.reason;
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            const errorStack = error instanceof Error ? error.stack || null : null;
+            const errorName = error instanceof Error ? error.name : "UnknownError";
+
+            // Log to extraction_logs table
+            errorLogsToInsert.push({
+              id: uuid(),
+              emailId: originalEmail.id,
+              jobId,
+              level: "error",
+              message: `[Model: ${runInfo.modelId}] ${errorMessage}`,
+              errorType: errorName.includes("API") ? "api_error" :
+                        errorName.includes("Schema") ? "schema_validation" : "unknown",
+              stackTrace: errorStack,
+              metadata: {
+                name: errorName,
+                timestamp: new Date().toISOString(),
+                runId: runInfo.extractionRunId,
+              },
+            });
+
+            // Also create a failed extraction record
+            extractionsToInsert.push({
+              id: uuid(),
+              emailId: originalEmail.id,
+              runId: runInfo.extractionRunId,
+              status: "failed" as "completed" | "informational" | "skipped",
+              rawExtraction: {
+                isTransactional: false,
+                emailType: "error",
+                transactions: [],
+                extractionNotes: errorMessage,
+              },
+              confidence: null,
+              processingTimeMs: 0,
+              transactionIds: [],
+            });
+
+            console.error(`[Inngest] Error processing email ${originalEmail.id}: ${errorMessage}`);
           }
         }
 
@@ -547,6 +613,13 @@ export const extractionJob = inngest.createFunction(
         if (extractionsToInsert.length > 0) {
           for (let i = 0; i < extractionsToInsert.length; i += DB_BATCH_SIZE) {
             await db.insert(emailExtractions).values(extractionsToInsert.slice(i, i + DB_BATCH_SIZE));
+          }
+        }
+
+        // Insert error logs
+        if (errorLogsToInsert.length > 0) {
+          for (let i = 0; i < errorLogsToInsert.length; i += DB_BATCH_SIZE) {
+            await db.insert(extractionLogs).values(errorLogsToInsert.slice(i, i + DB_BATCH_SIZE));
           }
         }
 

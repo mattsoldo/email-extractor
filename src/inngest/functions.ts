@@ -15,6 +15,7 @@ import { v4 as uuid } from "uuid";
 import { extractTransaction, DEFAULT_MODEL_ID } from "@/services/ai-extractor";
 import { normalizeTransaction } from "@/services/transaction-normalizer";
 import { SOFTWARE_VERSION } from "@/config/version";
+import { getModelConcurrencyLimit } from "@/services/model-config";
 
 // DB batch size for final writes
 const DB_BATCH_SIZE = 100;
@@ -282,41 +283,55 @@ export const extractionJob = inngest.createFunction(
       };
     });
 
-    console.log(`[Inngest] Processing ${workload.totalEmails} emails with parallel steps`);
+    // Get concurrency limit based on the model's provider
+    const concurrencyLimit = getModelConcurrencyLimit(runInfo.modelId);
+    console.log(`[Inngest] Processing ${workload.totalEmails} emails with concurrency limit ${concurrencyLimit} (model: ${runInfo.modelId})`);
 
-    // Step 3: Kick off all email extractions as parallel steps
-    // Inngest will manage concurrency (up to your plan's limit)
-    const extractionPromises = workload.emailIds.map((emailId) =>
-      step.run(`extract-${emailId}`, async () => {
-        // Fetch the email
-        const [email] = await db
-          .select()
-          .from(emails)
-          .where(eq(emails.id, emailId))
-          .limit(1);
+    // Step 3: Process email extractions in waves to respect provider rate limits
+    // Instead of kicking off all steps at once, process in batches
+    const extractionResults: Awaited<ReturnType<typeof processEmail>>[] = [];
 
-        if (!email) {
-          return {
-            emailId,
-            success: false,
-            processingTimeMs: 0,
-            error: "Email not found",
-            errorName: "NotFoundError",
-          };
-        }
+    for (let waveStart = 0; waveStart < workload.emailIds.length; waveStart += concurrencyLimit) {
+      const waveEmailIds = workload.emailIds.slice(waveStart, waveStart + concurrencyLimit);
+      const waveNumber = Math.floor(waveStart / concurrencyLimit) + 1;
+      const totalWaves = Math.ceil(workload.emailIds.length / concurrencyLimit);
 
-        // Process the email
-        return processEmail(
-          email,
-          runInfo.modelId,
-          workload.promptContent,
-          workload.jsonSchema
-        );
-      })
-    );
+      console.log(`[Inngest] Processing wave ${waveNumber}/${totalWaves} (${waveEmailIds.length} emails)`);
 
-    // Wait for all extractions to complete
-    const extractionResults = await Promise.all(extractionPromises);
+      // Kick off this wave's extractions in parallel
+      const wavePromises = waveEmailIds.map((emailId) =>
+        step.run(`extract-${emailId}`, async () => {
+          // Fetch the email
+          const [email] = await db
+            .select()
+            .from(emails)
+            .where(eq(emails.id, emailId))
+            .limit(1);
+
+          if (!email) {
+            return {
+              emailId,
+              success: false,
+              processingTimeMs: 0,
+              error: "Email not found",
+              errorName: "NotFoundError",
+            };
+          }
+
+          // Process the email
+          return processEmail(
+            email,
+            runInfo.modelId,
+            workload.promptContent,
+            workload.jsonSchema
+          );
+        })
+      );
+
+      // Wait for this wave to complete before starting the next
+      const waveResults = await Promise.all(wavePromises);
+      extractionResults.push(...waveResults);
+    }
 
     console.log(`[Inngest] All ${extractionResults.length} extractions complete, writing to DB`);
 

@@ -245,6 +245,32 @@ export function formatCost(cost: number): string {
 }
 
 /**
+ * Get the recommended concurrency limit for a provider
+ * This helps avoid rate limiting when processing many emails
+ */
+export function getProviderConcurrencyLimit(provider: ModelProvider): number {
+  switch (provider) {
+    case "anthropic":
+      return 100; // Anthropic has high rate limits
+    case "openai":
+      return 50;  // OpenAI has moderate rate limits
+    case "google":
+      return 15;  // Google Gemini has stricter rate limits
+    default:
+      return 10;  // Conservative default
+  }
+}
+
+/**
+ * Get the concurrency limit for a specific model
+ */
+export function getModelConcurrencyLimit(modelId: string): number {
+  const model = getModelConfig(modelId);
+  if (!model) return 10; // Conservative default for unknown models
+  return getProviderConcurrencyLimit(model.provider);
+}
+
+/**
  * Check if a provider has the required API key configured
  */
 export function isProviderConfigured(provider: ModelProvider): boolean {

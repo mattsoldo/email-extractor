@@ -3,7 +3,6 @@ import { db } from "@/db";
 import {
   emails,
   transactions,
-  accounts,
   extractionRuns,
   emailExtractions,
   extractionLogs,
@@ -11,107 +10,21 @@ import {
   discussionSummaries,
   jobs,
 } from "@/db/schema";
-import { eq, inArray, desc } from "drizzle-orm";
+import { eq, sql, desc } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import { extractTransaction, DEFAULT_MODEL_ID } from "@/services/ai-extractor";
-import { normalizeTransaction } from "@/services/transaction-normalizer";
+import { normalizeTransaction, detectOrCreateAccount } from "@/services/transaction-normalizer";
 import { SOFTWARE_VERSION } from "@/config/version";
-import { getModelConcurrencyLimit } from "@/services/model-config";
-
-// DB batch size for final writes
-const DB_BATCH_SIZE = 100;
 
 /**
- * Process a single email extraction
- * Returns the extraction result without writing to DB
+ * Orchestrator function - creates the run and fans out to individual email processors
+ * This function returns quickly after dispatching all email events
  */
-async function processEmail(
-  email: typeof emails.$inferSelect,
-  modelId: string,
-  promptContent: string,
-  jsonSchema: Record<string, unknown> | null
-): Promise<{
-  emailId: string;
-  success: boolean;
-  extraction?: {
-    isTransactional: boolean;
-    emailType: string;
-    transactions: Array<Record<string, unknown>>;
-    extractionNotes?: string;
-    discussionSummary?: string | null;
-    relatedReferenceNumbers?: string[];
-  };
-  processingTimeMs: number;
-  error?: string;
-  errorStack?: string;
-  errorName?: string;
-}> {
-  const parsedEmail = {
-    id: email.id,
-    filename: email.filename,
-    subject: email.subject,
-    sender: email.sender,
-    senderName: email.senderName,
-    recipient: email.recipient,
-    recipientName: email.recipientName,
-    cc: email.cc,
-    replyTo: email.replyTo,
-    messageId: email.messageId,
-    inReplyTo: email.inReplyTo,
-    date: email.date,
-    receivedAt: email.receivedAt,
-    bodyText: email.bodyText,
-    bodyHtml: email.bodyHtml,
-    rawContent: email.rawContent,
-    headers: (email.headers as Record<string, string>) || {},
-  };
-
-  const startTime = Date.now();
-  try {
-    const extraction = await extractTransaction(
-      parsedEmail,
-      modelId,
-      promptContent,
-      jsonSchema
-    );
-    const endTime = Date.now();
-
-    return {
-      emailId: email.id,
-      success: true,
-      extraction: {
-        isTransactional: extraction.isTransactional,
-        emailType: extraction.emailType,
-        transactions: extraction.transactions as Array<Record<string, unknown>>,
-        extractionNotes: extraction.extractionNotes || undefined,
-        discussionSummary: extraction.discussionSummary ?? null,
-        relatedReferenceNumbers: extraction.relatedReferenceNumbers ?? [],
-      },
-      processingTimeMs: endTime - startTime,
-    };
-  } catch (error) {
-    const endTime = Date.now();
-    return {
-      emailId: email.id,
-      success: false,
-      processingTimeMs: endTime - startTime,
-      error: error instanceof Error ? error.message : String(error),
-      errorStack: error instanceof Error ? error.stack : undefined,
-      errorName: error instanceof Error ? error.name : "UnknownError",
-    };
-  }
-}
-
-/**
- * Main extraction function using Inngest steps
- * Each email is processed as an individual step for maximum parallelism
- */
-export const extractionJob = inngest.createFunction(
+export const extractionOrchestrator = inngest.createFunction(
   {
-    id: "extraction-job",
-    // Retry configuration for individual steps
+    id: "extraction-orchestrator",
     retries: 3,
-    // Cancel running job if a new one starts for same run
+    // Cancel if a new orchestrator starts for the same run
     cancelOn: [
       {
         event: "extraction/cancel",
@@ -128,7 +41,6 @@ export const extractionJob = inngest.createFunction(
     const runInfo = await step.run("initialize-run", async () => {
       let extractionRunId: string;
       let alreadyProcessedEmailIds: string[] = [];
-      let existingTransactionsCount = 0;
       let isResume = false;
       let effectiveSetId = setId;
       let effectivePromptId = promptId;
@@ -167,7 +79,6 @@ export const extractionJob = inngest.createFunction(
           .where(eq(emailExtractions.runId, existingRun.id));
 
         alreadyProcessedEmailIds = processedExtractions.map((e) => e.emailId);
-        existingTransactionsCount = existingRun.transactionsCreated || 0;
 
         // Update run status back to running
         await db
@@ -215,6 +126,10 @@ export const extractionJob = inngest.createFunction(
           config: { sampleSize },
           status: "running",
           startedAt: new Date(),
+          emailsProcessed: 0,
+          transactionsCreated: 0,
+          informationalCount: 0,
+          errorCount: 0,
         });
 
         console.log(`[Inngest] Created new run v${nextVersion}: ${extractionRunId}`);
@@ -226,7 +141,6 @@ export const extractionJob = inngest.createFunction(
         promptId: effectivePromptId,
         modelId: effectiveModelId,
         alreadyProcessedEmailIds,
-        existingTransactionsCount,
         isResume,
       };
     });
@@ -276,498 +190,410 @@ export const extractionJob = inngest.createFunction(
       if (runForJob?.jobId) {
         await db
           .update(jobs)
-          .set({ totalItems: emailIds.length })
+          .set({ totalItems: emailIds.length + runInfo.alreadyProcessedEmailIds.length })
           .where(eq(jobs.id, runForJob.jobId));
       }
 
       return {
         promptContent: prompt.content,
-        jsonSchema: prompt.jsonSchema,
+        jsonSchema: prompt.jsonSchema as Record<string, unknown> | null,
         emailIds: emailIds.map((e) => e.id),
-        totalEmails: emailIds.length,
+        totalEmails: emailIds.length + runInfo.alreadyProcessedEmailIds.length,
       };
     });
 
-    // Get concurrency limit based on the model's provider
-    const concurrencyLimit = getModelConcurrencyLimit(runInfo.modelId);
-    console.log(`[Inngest] Processing ${workload.totalEmails} emails with concurrency limit ${concurrencyLimit} (model: ${runInfo.modelId})`);
+    // Step 3: Fan out - send an event for each email to be processed
+    await step.run("dispatch-email-events", async () => {
+      const events = workload.emailIds.map((emailId) => ({
+        name: "extraction/process-email" as const,
+        data: {
+          runId: runInfo.extractionRunId,
+          emailId,
+          modelId: runInfo.modelId,
+          promptContent: workload.promptContent,
+          jsonSchema: workload.jsonSchema,
+          totalEmails: workload.totalEmails,
+        },
+      }));
 
-    // Step 3: Process email extractions in waves to respect provider rate limits
-    // Instead of kicking off all steps at once, process in batches
-    const extractionResults: Awaited<ReturnType<typeof processEmail>>[] = [];
-
-    for (let waveStart = 0; waveStart < workload.emailIds.length; waveStart += concurrencyLimit) {
-      const waveEmailIds = workload.emailIds.slice(waveStart, waveStart + concurrencyLimit);
-      const waveNumber = Math.floor(waveStart / concurrencyLimit) + 1;
-      const totalWaves = Math.ceil(workload.emailIds.length / concurrencyLimit);
-
-      console.log(`[Inngest] Processing wave ${waveNumber}/${totalWaves} (${waveEmailIds.length} emails)`);
-
-      // Kick off this wave's extractions in parallel
-      const wavePromises = waveEmailIds.map((emailId) =>
-        step.run(`extract-${emailId}`, async () => {
-          // Fetch the email
-          const [email] = await db
-            .select()
-            .from(emails)
-            .where(eq(emails.id, emailId))
-            .limit(1);
-
-          if (!email) {
-            return {
-              emailId,
-              success: false,
-              processingTimeMs: 0,
-              error: "Email not found",
-              errorName: "NotFoundError",
-            };
-          }
-
-          // Process the email
-          return processEmail(
-            email,
-            runInfo.modelId,
-            workload.promptContent,
-            workload.jsonSchema
-          );
-        })
-      );
-
-      // Wait for this wave to complete before starting the next
-      const waveResults = await Promise.all(wavePromises);
-      extractionResults.push(...waveResults);
-    }
-
-    console.log(`[Inngest] All ${extractionResults.length} extractions complete, writing to DB`);
-
-    // Step 4: Write all results to DB in batches
-    const writeResult = await step.run("write-results", async () => {
-      // Pre-fetch accounts for efficient resolution
-      const existingAccounts = await db.select().from(accounts);
-      const accountsByMaskedNumber = new Map<string, (typeof existingAccounts)[0]>();
-      const accountsByName = new Map<string, (typeof existingAccounts)[0]>();
-
-      for (const account of existingAccounts) {
-        if (account.maskedNumber) {
-          accountsByMaskedNumber.set(
-            account.maskedNumber.replace(/[\s-]/g, "").toUpperCase(),
-            account
-          );
-        }
-        if (account.displayName) {
-          accountsByName.set(account.displayName.toLowerCase(), account);
-        }
+      // Send all events in batches (Inngest has a limit per request)
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < events.length; i += BATCH_SIZE) {
+        const batch = events.slice(i, i + BATCH_SIZE);
+        await inngest.send(batch);
       }
 
-      const accountCache = new Map<string, string | null>();
-      const newAccountsToCreate: Array<{
-        id: string;
-        displayName: string;
-        institution: string | null;
-        accountNumber: string | null;
-        maskedNumber: string | null;
-        accountType: string | null;
-        corpusId: string | null;
-        isExternal: boolean;
-        metadata: Record<string, unknown>;
-        createdAt: Date;
-        updatedAt: Date;
-      }> = [];
-
-      function getAccountCacheKey(input: {
-        accountNumber?: string | null;
-        accountName?: string | null;
-        institution?: string | null;
-      }): string {
-        return `${input.accountNumber || ""}_${input.accountName || ""}_${input.institution || ""}`;
-      }
-
-      function findOrCreateAccountSync(input: {
-        accountNumber?: string | null;
-        accountName?: string | null;
-        institution?: string | null;
-        isExternal?: boolean;
-      }): string | null {
-        if (!input.accountNumber && !input.accountName) {
-          return null;
-        }
-
-        const cacheKey = getAccountCacheKey(input);
-        if (accountCache.has(cacheKey)) {
-          return accountCache.get(cacheKey)!;
-        }
-
-        if (input.accountNumber) {
-          const normalizedNumber = input.accountNumber.replace(/[\s-]/g, "").toUpperCase();
-          const existing = accountsByMaskedNumber.get(normalizedNumber);
-          if (existing) {
-            accountCache.set(cacheKey, existing.id);
-            return existing.id;
-          }
-          const last4 = normalizedNumber.match(/(\d{4})$/)?.[1];
-          if (last4) {
-            for (const [key, account] of accountsByMaskedNumber) {
-              if (key.endsWith(last4)) {
-                accountCache.set(cacheKey, account.id);
-                return account.id;
-              }
-            }
-          }
-        }
-
-        if (input.accountName) {
-          const existing = accountsByName.get(input.accountName.toLowerCase());
-          if (existing) {
-            accountCache.set(cacheKey, existing.id);
-            return existing.id;
-          }
-        }
-
-        const newId = uuid();
-        const newAccount = {
-          id: newId,
-          displayName: input.accountName || input.accountNumber || "Unknown Account",
-          institution: input.institution || null,
-          accountNumber: input.accountNumber?.includes("X")
-            ? null
-            : input.accountNumber || null,
-          maskedNumber: input.accountNumber || null,
-          accountType: null,
-          corpusId: null,
-          isExternal: input.isExternal || false,
-          metadata: {},
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-        newAccountsToCreate.push(newAccount);
-
-        if (newAccount.maskedNumber) {
-          accountsByMaskedNumber.set(
-            newAccount.maskedNumber.replace(/[\s-]/g, "").toUpperCase(),
-            newAccount as (typeof existingAccounts)[0]
-          );
-        }
-        if (newAccount.displayName) {
-          accountsByName.set(
-            newAccount.displayName.toLowerCase(),
-            newAccount as (typeof existingAccounts)[0]
-          );
-        }
-
-        accountCache.set(cacheKey, newId);
-        return newId;
-      }
-
-      // Get job ID for error logging
-      const [runForJob] = await db
-        .select({ jobId: extractionRuns.jobId })
-        .from(extractionRuns)
-        .where(eq(extractionRuns.id, runInfo.extractionRunId))
-        .limit(1);
-      const jobId = runForJob?.jobId || null;
-
-      // Process all extraction results
-      const transactionsToInsert: Array<{
-        id: string;
-        emailId: string;
-        data: ReturnType<typeof normalizeTransaction>;
-      }> = [];
-      const extractionsToInsert: Array<{
-        id: string;
-        emailId: string;
-        runId: string;
-        status: "completed" | "informational" | "skipped" | "failed";
-        rawExtraction: {
-          isTransactional: boolean;
-          emailType: string;
-          transactions: Array<Record<string, unknown>>;
-          extractionNotes?: string;
-          skipReason?: string;
-          informationalNotes?: string;
-          discussionSummary?: string | null;
-          relatedReferenceNumbers?: string[];
-        };
-        confidence: string | null;
-        processingTimeMs: number;
-        transactionIds: string[];
-      }> = [];
-      const discussionSummariesToInsert: Array<{
-        id: string;
-        emailId: string;
-        runId: string;
-        summary: string;
-        relatedReferenceNumbers: string[];
-      }> = [];
-      const errorLogsToInsert: Array<{
-        id: string;
-        emailId: string;
-        jobId: string | null;
-        level: "error";
-        message: string;
-        errorType: string;
-        stackTrace: string | null;
-        metadata: Record<string, unknown>;
-      }> = [];
-
-      let totalTransactions = 0;
-      let failedCount = 0;
-      let informationalCount = 0;
-
-      for (const result of extractionResults) {
-        if (result.success && result.extraction) {
-          const extraction = result.extraction;
-          const txIds: string[] = [];
-          const discussionSummary = extraction.discussionSummary?.trim();
-          const isEvidence = extraction.emailType === "evidence";
-          if (discussionSummary) {
-            discussionSummariesToInsert.push({
-              id: uuid(),
-              emailId: result.emailId,
-              runId: runInfo.extractionRunId,
-              summary: discussionSummary,
-              relatedReferenceNumbers: Array.isArray(extraction.relatedReferenceNumbers)
-                ? extraction.relatedReferenceNumbers
-                : [],
-            });
-          }
-
-          if (!isEvidence && extraction.isTransactional && extraction.transactions.length > 0) {
-            for (const txData of extraction.transactions) {
-              const typedTxData = txData as Record<string, unknown>;
-
-              const fromAccountId = findOrCreateAccountSync({
-                accountNumber: typedTxData.accountNumber as string | null,
-                accountName: typedTxData.accountName as string | null,
-                institution: typedTxData.institution as string | null,
-              });
-
-              let toAccountId: string | null = null;
-              if (typedTxData.toAccountNumber || typedTxData.toAccountName) {
-                toAccountId = findOrCreateAccountSync({
-                  accountNumber: typedTxData.toAccountNumber as string | null,
-                  accountName: typedTxData.toAccountName as string | null,
-                  institution: typedTxData.toInstitution as string | null,
-                  isExternal:
-                    typedTxData.transactionType === "wire_transfer_out" ||
-                    typedTxData.transactionType === "wire_transfer_in",
-                });
-              }
-
-              const normalizedTx = normalizeTransaction(
-                { ...typedTxData, isTransaction: true, extractionNotes: null } as Parameters<typeof normalizeTransaction>[0],
-                fromAccountId,
-                toAccountId
-              );
-              const txId = uuid();
-              txIds.push(txId);
-
-              transactionsToInsert.push({
-                id: txId,
-                emailId: result.emailId,
-                data: normalizedTx,
-              });
-              totalTransactions++;
-            }
-
-            const confidences = extraction.transactions
-              .map((t) => (t as Record<string, unknown>).confidence as number | null | undefined)
-              .filter((c): c is number => c !== null && c !== undefined);
-            const avgConfidence =
-              confidences.length > 0
-                ? confidences.reduce((sum, c) => sum + c, 0) / confidences.length
-                : null;
-
-            extractionsToInsert.push({
-              id: uuid(),
-              emailId: result.emailId,
-              runId: runInfo.extractionRunId,
-              status: "completed",
-              rawExtraction: {
-                isTransactional: extraction.isTransactional,
-                emailType: extraction.emailType,
-                transactions: extraction.transactions,
-                extractionNotes: extraction.extractionNotes,
-                discussionSummary: extraction.discussionSummary ?? null,
-                relatedReferenceNumbers: extraction.relatedReferenceNumbers ?? [],
-              },
-              confidence: avgConfidence ? avgConfidence.toFixed(2) : null,
-              processingTimeMs: result.processingTimeMs,
-              transactionIds: txIds,
-            });
-          } else {
-            // Non-transactional email
-            extractionsToInsert.push({
-              id: uuid(),
-              emailId: result.emailId,
-              runId: runInfo.extractionRunId,
-              status: "informational",
-              rawExtraction: {
-                isTransactional: extraction.isTransactional,
-                emailType: extraction.emailType,
-                transactions: extraction.transactions,
-                extractionNotes: extraction.extractionNotes,
-                discussionSummary: extraction.discussionSummary ?? null,
-                relatedReferenceNumbers: extraction.relatedReferenceNumbers ?? [],
-              },
-              confidence: null,
-              processingTimeMs: result.processingTimeMs,
-              transactionIds: [],
-            });
-            informationalCount++;
-          }
-        } else {
-          // Failed extraction
-          failedCount++;
-
-          errorLogsToInsert.push({
-            id: uuid(),
-            emailId: result.emailId,
-            jobId,
-            level: "error",
-            message: `[Model: ${runInfo.modelId}] ${result.error || "Unknown error"}`,
-            errorType: result.errorName?.includes("API")
-              ? "api_error"
-              : result.errorName?.includes("Schema")
-              ? "schema_validation"
-              : "unknown",
-            stackTrace: result.errorStack || null,
-            metadata: {
-              name: result.errorName || "UnknownError",
-              timestamp: new Date().toISOString(),
-              runId: runInfo.extractionRunId,
-            },
-          });
-
-          extractionsToInsert.push({
-            id: uuid(),
-            emailId: result.emailId,
-            runId: runInfo.extractionRunId,
-            status: "failed",
-            rawExtraction: {
-              isTransactional: false,
-              emailType: "error",
-              transactions: [],
-              extractionNotes: result.error,
-            },
-            confidence: null,
-            processingTimeMs: result.processingTimeMs,
-            transactionIds: [],
-          });
-
-          console.error(`[Inngest] Error processing email ${result.emailId}: ${result.error}`);
-        }
-      }
-
-      // Insert accounts in batches
-      if (newAccountsToCreate.length > 0) {
-        console.log(`[Inngest] Creating ${newAccountsToCreate.length} new accounts`);
-        for (let i = 0; i < newAccountsToCreate.length; i += DB_BATCH_SIZE) {
-          await db.insert(accounts).values(newAccountsToCreate.slice(i, i + DB_BATCH_SIZE));
-        }
-      }
-
-      // Insert transactions in batches
-      if (transactionsToInsert.length > 0) {
-        console.log(`[Inngest] Inserting ${transactionsToInsert.length} transactions`);
-        for (let i = 0; i < transactionsToInsert.length; i += DB_BATCH_SIZE) {
-          const batch = transactionsToInsert.slice(i, i + DB_BATCH_SIZE).map((t) => ({
-            ...t.data,
-            id: t.id,
-            sourceEmailId: t.emailId,
-            extractionRunId: runInfo.extractionRunId,
-            runCompleted: false,
-          }));
-          await db.insert(transactions).values(batch);
-        }
-      }
-
-      // Insert extractions in batches
-      if (extractionsToInsert.length > 0) {
-        console.log(`[Inngest] Inserting ${extractionsToInsert.length} extractions`);
-        for (let i = 0; i < extractionsToInsert.length; i += DB_BATCH_SIZE) {
-          await db.insert(emailExtractions).values(extractionsToInsert.slice(i, i + DB_BATCH_SIZE));
-        }
-      }
-
-      if (discussionSummariesToInsert.length > 0) {
-        console.log(`[Inngest] Inserting ${discussionSummariesToInsert.length} discussion summaries`);
-        for (let i = 0; i < discussionSummariesToInsert.length; i += DB_BATCH_SIZE) {
-          await db.insert(discussionSummaries).values(discussionSummariesToInsert.slice(i, i + DB_BATCH_SIZE));
-        }
-      }
-
-      // Insert error logs in batches
-      if (errorLogsToInsert.length > 0) {
-        console.log(`[Inngest] Inserting ${errorLogsToInsert.length} error logs`);
-        for (let i = 0; i < errorLogsToInsert.length; i += DB_BATCH_SIZE) {
-          await db.insert(extractionLogs).values(errorLogsToInsert.slice(i, i + DB_BATCH_SIZE));
-        }
-      }
-
-      return {
-        totalTransactions,
-        failedCount,
-        informationalCount,
-        accountsCreated: newAccountsToCreate.length,
-      };
-    });
-
-    // Step 5: Finalize the run
-    await step.run("finalize-run", async () => {
-      // Mark all transactions as completed
-      await db
-        .update(transactions)
-        .set({ runCompleted: true })
-        .where(eq(transactions.extractionRunId, runInfo.extractionRunId));
-
-      const totalProcessed = workload.totalEmails + runInfo.alreadyProcessedEmailIds.length;
-      const totalTransactions = writeResult.totalTransactions + runInfo.existingTransactionsCount;
-
-      // Update run status
-      await db
-        .update(extractionRuns)
-        .set({
-          status: "completed",
-          completedAt: new Date(),
-          emailsProcessed: totalProcessed,
-          transactionsCreated: totalTransactions,
-          informationalCount: writeResult.informationalCount,
-          errorCount: writeResult.failedCount,
-        })
-        .where(eq(extractionRuns.id, runInfo.extractionRunId));
-
-      // Update job status
-      const [run] = await db
-        .select({ jobId: extractionRuns.jobId })
-        .from(extractionRuns)
-        .where(eq(extractionRuns.id, runInfo.extractionRunId))
-        .limit(1);
-
-      if (run?.jobId) {
-        await db
-          .update(jobs)
-          .set({
-            status: "completed",
-            completedAt: new Date(),
-            processedItems: totalProcessed,
-          })
-          .where(eq(jobs.id, run.jobId));
-      }
-
-      console.log(
-        `[Inngest] Run complete: ${totalProcessed} emails, ${totalTransactions} transactions, ${writeResult.failedCount} errors`
-      );
+      console.log(`[Inngest] Dispatched ${events.length} email processing events for run ${runInfo.extractionRunId}`);
     });
 
     return {
       runId: runInfo.extractionRunId,
-      emailsProcessed: workload.totalEmails + runInfo.alreadyProcessedEmailIds.length,
-      transactionsCreated: writeResult.totalTransactions + runInfo.existingTransactionsCount,
-      informationalCount: writeResult.informationalCount,
-      failedCount: writeResult.failedCount,
+      emailsDispatched: workload.emailIds.length,
+      totalEmails: workload.totalEmails,
+    };
+  }
+);
+
+/**
+ * Email processor function - processes a single email
+ * Inngest manages concurrency via the concurrency option
+ */
+export const extractionProcessEmail = inngest.createFunction(
+  {
+    id: "extraction-process-email",
+    retries: 3,
+    // Concurrency limit - Inngest will queue excess invocations
+    concurrency: {
+      limit: 5, // Conservative default, respects most API rate limits
+      key: "event.data.runId", // Partition by run so different runs don't block each other
+    },
+  },
+  { event: "extraction/process-email" },
+  async ({ event, step }) => {
+    const { runId, emailId, modelId, promptContent, jsonSchema, totalEmails } = event.data;
+
+    // Define extraction result type
+    type ExtractionResultSuccess = {
+      success: true;
+      extraction: {
+        isTransactional: boolean;
+        emailType: string;
+        transactions: Array<Record<string, unknown>>;
+        extractionNotes?: string;
+        discussionSummary: string | null;
+        relatedReferenceNumbers: string[];
+      };
+      processingTimeMs: number;
+    };
+    type ExtractionResultFailure = {
+      success: false;
+      processingTimeMs: number;
+      error: string;
+      errorStack?: string;
+      errorName: string;
+    };
+    type ExtractionResult = ExtractionResultSuccess | ExtractionResultFailure;
+
+    // Step 1: Fetch the email and process it
+    const extractionResult: ExtractionResult = await step.run("extract", async () => {
+      const [email] = await db
+        .select()
+        .from(emails)
+        .where(eq(emails.id, emailId))
+        .limit(1);
+
+      if (!email) {
+        return {
+          success: false as const,
+          error: "Email not found",
+          errorName: "NotFoundError",
+          processingTimeMs: 0,
+        };
+      }
+
+      const parsedEmail = {
+        id: email.id,
+        filename: email.filename,
+        subject: email.subject,
+        sender: email.sender,
+        senderName: email.senderName,
+        recipient: email.recipient,
+        recipientName: email.recipientName,
+        cc: email.cc,
+        replyTo: email.replyTo,
+        messageId: email.messageId,
+        inReplyTo: email.inReplyTo,
+        date: email.date,
+        receivedAt: email.receivedAt,
+        bodyText: email.bodyText,
+        bodyHtml: email.bodyHtml,
+        rawContent: email.rawContent,
+        headers: (email.headers as Record<string, string>) || {},
+      };
+
+      const startTime = Date.now();
+      try {
+        const extraction = await extractTransaction(
+          parsedEmail,
+          modelId,
+          promptContent,
+          jsonSchema
+        );
+        const endTime = Date.now();
+
+        return {
+          success: true as const,
+          extraction: {
+            isTransactional: extraction.isTransactional,
+            emailType: extraction.emailType,
+            transactions: extraction.transactions as Array<Record<string, unknown>>,
+            extractionNotes: extraction.extractionNotes || undefined,
+            discussionSummary: extraction.discussionSummary ?? null,
+            relatedReferenceNumbers: extraction.relatedReferenceNumbers ?? [],
+          },
+          processingTimeMs: endTime - startTime,
+        };
+      } catch (error) {
+        const endTime = Date.now();
+        return {
+          success: false as const,
+          processingTimeMs: endTime - startTime,
+          error: error instanceof Error ? error.message : String(error),
+          errorStack: error instanceof Error ? error.stack : undefined,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        };
+      }
+    });
+
+    // Step 2: Write results to DB and update counters
+    const writeResult = await step.run("write-results", async () => {
+      // Get job ID for error logging
+      const [runForJob] = await db
+        .select({ jobId: extractionRuns.jobId })
+        .from(extractionRuns)
+        .where(eq(extractionRuns.id, runId))
+        .limit(1);
+      const jobId = runForJob?.jobId || null;
+
+      let transactionsCreated = 0;
+      let isInformational = false;
+      let isFailed = false;
+
+      if (extractionResult.success && extractionResult.extraction) {
+        const extraction = extractionResult.extraction;
+        const txIds: string[] = [];
+        const discussionSummary = extraction.discussionSummary?.trim();
+        const isEvidence = extraction.emailType === "evidence";
+
+        // Insert discussion summary if present
+        if (discussionSummary) {
+          await db.insert(discussionSummaries).values({
+            id: uuid(),
+            emailId,
+            runId,
+            summary: discussionSummary,
+            relatedReferenceNumbers: Array.isArray(extraction.relatedReferenceNumbers)
+              ? extraction.relatedReferenceNumbers
+              : [],
+          });
+        }
+
+        if (!isEvidence && extraction.isTransactional && extraction.transactions.length > 0) {
+          // Process transactions
+          for (const txData of extraction.transactions) {
+            const typedTxData = txData as Record<string, unknown>;
+
+            // Resolve accounts
+            const fromAccount = await detectOrCreateAccount({
+              accountNumber: typedTxData.accountNumber as string | null,
+              accountName: typedTxData.accountName as string | null,
+              institution: typedTxData.institution as string | null,
+            });
+
+            let toAccount = null;
+            if (typedTxData.toAccountNumber || typedTxData.toAccountName) {
+              toAccount = await detectOrCreateAccount({
+                accountNumber: typedTxData.toAccountNumber as string | null,
+                accountName: typedTxData.toAccountName as string | null,
+                institution: typedTxData.toInstitution as string | null,
+                isExternal:
+                  typedTxData.transactionType === "wire_transfer_out" ||
+                  typedTxData.transactionType === "wire_transfer_in",
+              });
+            }
+
+            const normalizedTx = normalizeTransaction(
+              { ...typedTxData, isTransaction: true, extractionNotes: null } as Parameters<typeof normalizeTransaction>[0],
+              fromAccount?.id || null,
+              toAccount?.id || null
+            );
+            const txId = uuid();
+            txIds.push(txId);
+
+            await db.insert(transactions).values({
+              ...normalizedTx,
+              id: txId,
+              sourceEmailId: emailId,
+              extractionRunId: runId,
+              runCompleted: false,
+            });
+            transactionsCreated++;
+          }
+
+          // Calculate average confidence
+          const confidences = extraction.transactions
+            .map((t) => (t as Record<string, unknown>).confidence as number | null | undefined)
+            .filter((c): c is number => c !== null && c !== undefined);
+          const avgConfidence =
+            confidences.length > 0
+              ? confidences.reduce((sum, c) => sum + c, 0) / confidences.length
+              : null;
+
+          // Insert extraction record
+          await db.insert(emailExtractions).values({
+            id: uuid(),
+            emailId,
+            runId,
+            status: "completed",
+            rawExtraction: {
+              isTransactional: extraction.isTransactional,
+              emailType: extraction.emailType,
+              transactions: extraction.transactions,
+              extractionNotes: extraction.extractionNotes,
+              discussionSummary: extraction.discussionSummary ?? null,
+              relatedReferenceNumbers: extraction.relatedReferenceNumbers ?? [],
+            },
+            confidence: avgConfidence ? avgConfidence.toFixed(2) : null,
+            processingTimeMs: extractionResult.processingTimeMs,
+            transactionIds: txIds,
+          });
+        } else {
+          // Non-transactional email
+          isInformational = true;
+          await db.insert(emailExtractions).values({
+            id: uuid(),
+            emailId,
+            runId,
+            status: "informational",
+            rawExtraction: {
+              isTransactional: extraction.isTransactional,
+              emailType: extraction.emailType,
+              transactions: extraction.transactions,
+              extractionNotes: extraction.extractionNotes,
+              discussionSummary: extraction.discussionSummary ?? null,
+              relatedReferenceNumbers: extraction.relatedReferenceNumbers ?? [],
+            },
+            confidence: null,
+            processingTimeMs: extractionResult.processingTimeMs,
+            transactionIds: [],
+          });
+        }
+      } else {
+        // Failed extraction - cast to failure type since we're in the else branch
+        const failedResult = extractionResult as ExtractionResultFailure;
+        isFailed = true;
+
+        await db.insert(extractionLogs).values({
+          id: uuid(),
+          emailId,
+          jobId,
+          level: "error",
+          message: `[Model: ${modelId}] ${failedResult.error || "Unknown error"}`,
+          errorType: failedResult.errorName?.includes("API")
+            ? "api_error"
+            : failedResult.errorName?.includes("Schema")
+            ? "schema_validation"
+            : "unknown",
+          stackTrace: failedResult.errorStack || null,
+          metadata: {
+            name: failedResult.errorName || "UnknownError",
+            timestamp: new Date().toISOString(),
+            runId,
+          },
+        });
+
+        await db.insert(emailExtractions).values({
+          id: uuid(),
+          emailId,
+          runId,
+          status: "failed",
+          rawExtraction: {
+            isTransactional: false,
+            emailType: "error",
+            transactions: [],
+            extractionNotes: failedResult.error,
+          },
+          confidence: null,
+          processingTimeMs: failedResult.processingTimeMs,
+          transactionIds: [],
+        });
+
+        console.error(`[Inngest] Error processing email ${emailId}: ${failedResult.error}`);
+      }
+
+      // Atomically update run counters and check if we're done
+      const updateResult = await db
+        .update(extractionRuns)
+        .set({
+          emailsProcessed: sql`${extractionRuns.emailsProcessed} + 1`,
+          transactionsCreated: sql`${extractionRuns.transactionsCreated} + ${transactionsCreated}`,
+          informationalCount: isInformational
+            ? sql`${extractionRuns.informationalCount} + 1`
+            : extractionRuns.informationalCount,
+          errorCount: isFailed
+            ? sql`${extractionRuns.errorCount} + 1`
+            : extractionRuns.errorCount,
+        })
+        .where(eq(extractionRuns.id, runId))
+        .returning({
+          emailsProcessed: extractionRuns.emailsProcessed,
+          transactionsCreated: extractionRuns.transactionsCreated,
+          jobId: extractionRuns.jobId,
+        });
+
+      const updatedRun = updateResult[0];
+
+      // Update job progress
+      if (updatedRun?.jobId) {
+        await db
+          .update(jobs)
+          .set({
+            processedItems: updatedRun.emailsProcessed,
+          })
+          .where(eq(jobs.id, updatedRun.jobId));
+      }
+
+      return {
+        transactionsCreated,
+        isInformational,
+        isFailed,
+        totalProcessed: updatedRun?.emailsProcessed || 0,
+        isComplete: updatedRun?.emailsProcessed === totalEmails,
+        jobId: updatedRun?.jobId,
+      };
+    });
+
+    // Step 3: If this was the last email, finalize the run
+    if (writeResult.isComplete) {
+      await step.run("finalize-run", async () => {
+        // Mark all transactions as completed
+        await db
+          .update(transactions)
+          .set({ runCompleted: true })
+          .where(eq(transactions.extractionRunId, runId));
+
+        // Update run status to completed
+        await db
+          .update(extractionRuns)
+          .set({
+            status: "completed",
+            completedAt: new Date(),
+          })
+          .where(eq(extractionRuns.id, runId));
+
+        // Update job status
+        if (writeResult.jobId) {
+          await db
+            .update(jobs)
+            .set({
+              status: "completed",
+              completedAt: new Date(),
+            })
+            .where(eq(jobs.id, writeResult.jobId));
+        }
+
+        console.log(`[Inngest] Run ${runId} complete: ${totalEmails} emails processed`);
+      });
+    }
+
+    return {
+      emailId,
+      success: extractionResult.success,
+      transactionsCreated: writeResult.transactionsCreated,
+      isComplete: writeResult.isComplete,
     };
   }
 );
 
 // Export all functions
-export const functions = [extractionJob];
+export const functions = [extractionOrchestrator, extractionProcessEmail];

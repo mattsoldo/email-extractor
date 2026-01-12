@@ -22,6 +22,18 @@ export interface ExtractionStartedEvent {
   };
 }
 
+export interface ExtractionProcessEmailEvent {
+  name: "extraction/process-email";
+  data: {
+    runId: string;
+    emailId: string;
+    modelId: string;
+    promptContent: string;
+    jsonSchema: Record<string, unknown> | null;
+    totalEmails: number; // Total emails in this run (for finalization check)
+  };
+}
+
 export interface ExtractionResumeEvent {
   name: "extraction/resume";
   data: {
@@ -32,5 +44,6 @@ export interface ExtractionResumeEvent {
 // Union of all events
 export type InngestEvents = {
   "extraction/started": ExtractionStartedEvent;
+  "extraction/process-email": ExtractionProcessEmailEvent;
   "extraction/resume": ExtractionResumeEvent;
 };

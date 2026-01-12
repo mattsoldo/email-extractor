@@ -79,8 +79,10 @@ export default function RunDetailPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchRunDetails = useCallback(async () => {
-    setLoading(true);
+  const fetchRunDetails = useCallback(async (isPolling = false) => {
+    if (!isPolling) {
+      setLoading(true);
+    }
     try {
       const res = await fetch(`/api/runs/${runId}?limit=100`);
       if (!res.ok) {
@@ -92,13 +94,28 @@ export default function RunDetailPage() {
     } catch (error) {
       console.error("Failed to fetch run details:", error);
     } finally {
-      setLoading(false);
+      if (!isPolling) {
+        setLoading(false);
+      }
     }
   }, [runId]);
 
   useEffect(() => {
     fetchRunDetails();
   }, [fetchRunDetails]);
+
+  // Auto-refresh when job is running
+  useEffect(() => {
+    if (run?.status !== "running") {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      fetchRunDetails(true);
+    }, 3000); // Poll every 3 seconds
+
+    return () => clearInterval(interval);
+  }, [run?.status, fetchRunDetails]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -119,7 +136,7 @@ export default function RunDetailPage() {
       case "running":
         return (
           <Badge className="bg-blue-100 text-blue-800 gap-1">
-            <Clock className="h-3 w-3" />
+            <Loader2 className="h-3 w-3 animate-spin" />
             Running
           </Badge>
         );

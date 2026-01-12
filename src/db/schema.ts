@@ -309,6 +309,9 @@ export const extractionRuns = pgTable("extraction_runs", {
     byType: Record<string, number>;
     avgConfidence: number;
     processingTimeMs: number;
+    isResume?: boolean; // Whether this run was resumed from a failed state
+    resumedAt?: number; // Timestamp when resume was initiated
+    canResume?: boolean; // Whether this run can be resumed (has remaining emails)
   }>(),
   status: text("status").default("running"), // running, completed, failed
   startedAt: timestamp("started_at").defaultNow().notNull(),

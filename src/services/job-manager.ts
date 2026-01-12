@@ -1033,7 +1033,7 @@ async function runExtractionJob(
  * Progress event types for streaming extraction
  */
 export type ExtractionProgressEvent =
-  | { type: "started"; jobId: string; runId: string; totalItems: number; modelId: string; modelName: string }
+  | { type: "started"; jobId: string; runId: string; totalItems: number; modelId: string; modelName: string; isResume?: boolean; alreadyProcessed?: number }
   | { type: "progress"; processedItems: number; totalItems: number; failedItems: number; informationalItems: number; transactionsFound: number }
   | { type: "batch_complete"; batchSize: number; processedItems: number; totalItems: number }
   | { type: "batch_committed"; transactionsCommitted: number; totalTransactionsCommitted: number; processedItems: number; totalItems: number }
@@ -1046,6 +1046,9 @@ export type ExtractionProgressEvent =
  * Streaming version of extraction job that yields progress events.
  * This runs synchronously (not fire-and-forget) and yields events as it progresses.
  * Designed for use with Server-Sent Events to keep the connection alive on Vercel.
+ *
+ * Supports resuming failed/stalled runs via the resumeRunId option.
+ * When resuming, emails that already have extractions for that run are skipped.
  */
 export async function* runExtractionJobStreaming(
   options: {
@@ -1057,30 +1060,85 @@ export async function* runExtractionJobStreaming(
     runName?: string;
     runDescription?: string;
     sampleSize?: number;
+    resumeRunId?: string; // Resume a failed/stalled run instead of creating new one
   }
 ): AsyncGenerator<ExtractionProgressEvent> {
-  if (!options.setId) {
-    yield { type: "error", error: "setId is required for extraction" };
+  // When resuming, we don't need setId or promptId - we get them from the existing run
+  if (!options.resumeRunId && !options.setId) {
+    yield { type: "error", error: "setId is required for extraction (unless resuming)" };
     return;
   }
-  if (!options.promptId) {
-    yield { type: "error", error: "promptId is required for extraction" };
+  if (!options.resumeRunId && !options.promptId) {
+    yield { type: "error", error: "promptId is required for extraction (unless resuming)" };
     return;
   }
 
   const startTime = Date.now();
-  const modelId = options.modelId || DEFAULT_MODEL_ID;
-  const setId = options.setId;
+  let modelId = options.modelId || DEFAULT_MODEL_ID;
+  let setId = options.setId;
+  let promptId = options.promptId;
+  let extractionRunId!: string; // Definite assignment - guaranteed to be set in resume or new run block
+  let isResume = false;
+  let alreadyProcessedEmailIds: Set<string> = new Set();
+  let existingTransactionsCount = 0;
+
+  // If resuming, fetch existing run and determine what's already been processed
+  if (options.resumeRunId) {
+    const [existingRun] = await db
+      .select()
+      .from(extractionRuns)
+      .where(eq(extractionRuns.id, options.resumeRunId))
+      .limit(1);
+
+    if (!existingRun) {
+      yield { type: "error", error: `Run not found: ${options.resumeRunId}` };
+      return;
+    }
+
+    if (existingRun.status === "completed") {
+      yield { type: "error", error: "Cannot resume a completed run" };
+      return;
+    }
+
+    if (existingRun.status === "running") {
+      yield { type: "error", error: "Run is already in progress" };
+      return;
+    }
+
+    // Use values from the existing run
+    extractionRunId = existingRun.id;
+    setId = existingRun.setId;
+    promptId = existingRun.promptId;
+    modelId = existingRun.modelId;
+    isResume = true;
+
+    // Get emails already processed in this run
+    const processedExtractions = await db
+      .select({ emailId: emailExtractions.emailId })
+      .from(emailExtractions)
+      .where(eq(emailExtractions.runId, existingRun.id));
+
+    alreadyProcessedEmailIds = new Set(processedExtractions.map(e => e.emailId));
+    existingTransactionsCount = existingRun.transactionsCreated || 0;
+
+    console.log(`[Job Manager] Resuming run ${existingRun.id} (v${existingRun.version}): ${alreadyProcessedEmailIds.size} emails already processed, ${existingTransactionsCount} transactions already committed`);
+
+    // Update run status back to running
+    await db
+      .update(extractionRuns)
+      .set({ status: "running" })
+      .where(eq(extractionRuns.id, extractionRunId));
+  }
 
   // Fetch the prompt from database
   const promptResult = await db
     .select()
     .from(prompts)
-    .where(eq(prompts.id, options.promptId))
+    .where(eq(prompts.id, promptId))
     .limit(1);
 
   if (promptResult.length === 0) {
-    yield { type: "error", error: `Prompt not found: ${options.promptId}` };
+    yield { type: "error", error: `Prompt not found: ${promptId}` };
     return;
   }
 
@@ -1097,7 +1155,7 @@ export async function* runExtractionJobStreaming(
     .limit(1);
   const modelName = modelResult?.name || modelId;
 
-  // Create job record
+  // Create job record (always create a new job, even when resuming)
   const jobId = uuid();
   await db.insert(jobs).values({
     id: jobId,
@@ -1108,32 +1166,42 @@ export async function* runExtractionJobStreaming(
       ...options,
       softwareVersion: SOFTWARE_VERSION,
       streaming: true,
+      isResume,
+      resumedFromRunId: options.resumeRunId || null,
     },
   });
 
-  // Create extraction run
-  const extractionRunId = uuid();
-  const [latestRun] = await db
-    .select({ version: extractionRuns.version })
-    .from(extractionRuns)
-    .orderBy(desc(extractionRuns.version))
-    .limit(1);
-  const nextVersion = (latestRun?.version || 0) + 1;
+  // Create extraction run only if not resuming
+  if (!isResume) {
+    extractionRunId = uuid();
+    const [latestRun] = await db
+      .select({ version: extractionRuns.version })
+      .from(extractionRuns)
+      .orderBy(desc(extractionRuns.version))
+      .limit(1);
+    const nextVersion = (latestRun?.version || 0) + 1;
 
-  await db.insert(extractionRuns).values({
-    id: extractionRunId,
-    jobId,
-    setId,
-    version: nextVersion,
-    name: options.runName || null,
-    description: options.runDescription || null,
-    modelId,
-    promptId: options.promptId,
-    softwareVersion: SOFTWARE_VERSION,
-    config: options,
-    status: "running",
-    startedAt: new Date(),
-  });
+    await db.insert(extractionRuns).values({
+      id: extractionRunId,
+      jobId,
+      setId,
+      version: nextVersion,
+      name: options.runName || null,
+      description: options.runDescription || null,
+      modelId,
+      promptId,
+      softwareVersion: SOFTWARE_VERSION,
+      config: options,
+      status: "running",
+      startedAt: new Date(),
+    });
+  } else {
+    // Update the existing run's jobId to link to the new resume job
+    await db
+      .update(extractionRuns)
+      .set({ jobId })
+      .where(eq(extractionRuns.id, extractionRunId));
+  }
 
   // Get emails to process
   let emailsToProcess = await db
@@ -1141,9 +1209,17 @@ export async function* runExtractionJobStreaming(
     .from(emails)
     .where(eq(emails.setId, setId));
 
-  // Apply sampling if specified
   const totalInSet = emailsToProcess.length;
-  if (options.sampleSize && options.sampleSize > 0 && options.sampleSize < totalInSet) {
+
+  // When resuming, filter out already processed emails
+  if (isResume && alreadyProcessedEmailIds.size > 0) {
+    const beforeFilter = emailsToProcess.length;
+    emailsToProcess = emailsToProcess.filter(e => !alreadyProcessedEmailIds.has(e.id));
+    console.log(`[Job Manager] Filtered out ${beforeFilter - emailsToProcess.length} already-processed emails, ${emailsToProcess.length} remaining`);
+  }
+
+  // Apply sampling if specified (only for new runs, not resumes)
+  if (!isResume && options.sampleSize && options.sampleSize > 0 && options.sampleSize < totalInSet) {
     const shuffled = [...emailsToProcess];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -1165,13 +1241,15 @@ export async function* runExtractionJobStreaming(
     totalItems: emailsToProcess.length,
     modelId,
     modelName,
+    isResume,
+    alreadyProcessed: alreadyProcessedEmailIds.size,
   };
 
-  // Track progress
-  let processedItems = 0;
+  // Track progress - when resuming, start with existing counts
+  let processedItems = 0; // Only track new items processed in this session
   let failedItems = 0;
   let informationalItems = 0;
-  let totalTransactionsCommitted = 0;
+  let totalTransactionsCommitted = isResume ? existingTransactionsCount : 0;
   const runStats = {
     byType: {} as Record<string, number>,
     totalConfidence: 0,
@@ -1576,11 +1654,11 @@ export async function* runExtractionJobStreaming(
         const transactionsCommitted = await commitBatch();
         totalTransactionsCommitted += transactionsCommitted;
 
-        // Update extraction run with current progress
+        // Update extraction run with current progress (including already processed from resume)
         await db
           .update(extractionRuns)
           .set({
-            emailsProcessed: processedItems,
+            emailsProcessed: processedItems + alreadyProcessedEmailIds.size,
             transactionsCreated: totalTransactionsCommitted,
             informationalCount: informationalItems,
             errorCount: failedItems,
@@ -1588,6 +1666,7 @@ export async function* runExtractionJobStreaming(
               byType: runStats.byType,
               avgConfidence: runStats.transactionCount > 0 ? runStats.totalConfidence / runStats.transactionCount : 0,
               processingTimeMs: Date.now() - startTime,
+              isResume,
             },
           })
           .where(eq(extractionRuns.id, extractionRunId));
@@ -1623,13 +1702,16 @@ export async function* runExtractionJobStreaming(
       .set({ runCompleted: true })
       .where(eq(transactions.extractionRunId, extractionRunId));
 
+    // Calculate total emails processed (including those from resume)
+    const totalEmailsProcessed = processedItems + alreadyProcessedEmailIds.size;
+
     // Update extraction run as completed
     await db
       .update(extractionRuns)
       .set({
         status: "completed",
         completedAt: new Date(),
-        emailsProcessed: processedItems,
+        emailsProcessed: totalEmailsProcessed,
         transactionsCreated: totalTransactionsCommitted,
         informationalCount: informationalItems,
         errorCount: failedItems,
@@ -1637,6 +1719,8 @@ export async function* runExtractionJobStreaming(
           byType: runStats.byType,
           avgConfidence: runStats.transactionCount > 0 ? runStats.totalConfidence / runStats.transactionCount : 0,
           processingTimeMs,
+          isResume,
+          resumedAt: isResume ? startTime : undefined,
         },
       })
       .where(eq(extractionRuns.id, extractionRunId));
@@ -1652,22 +1736,24 @@ export async function* runExtractionJobStreaming(
       type: "completed",
       runId: extractionRunId,
       transactionsCreated: totalTransactionsCommitted,
-      emailsProcessed: processedItems,
+      emailsProcessed: totalEmailsProcessed,
       processingTimeMs,
     };
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     const processingTimeMs = Date.now() - startTime;
+    const totalEmailsProcessed = processedItems + alreadyProcessedEmailIds.size;
 
     // Update run as failed (but keep track of transactions that were committed before failure)
     // Note: transactions committed before failure have runCompleted = false
+    // The run can be resumed later to continue processing
     await db
       .update(extractionRuns)
       .set({
         status: "failed",
         completedAt: new Date(),
-        emailsProcessed: processedItems,
+        emailsProcessed: totalEmailsProcessed,
         transactionsCreated: totalTransactionsCommitted,
         informationalCount: informationalItems,
         errorCount: failedItems,
@@ -1675,6 +1761,8 @@ export async function* runExtractionJobStreaming(
           byType: runStats.byType,
           avgConfidence: runStats.transactionCount > 0 ? runStats.totalConfidence / runStats.transactionCount : 0,
           processingTimeMs,
+          isResume,
+          canResume: true, // Mark that this run can be resumed
         },
       })
       .where(eq(extractionRuns.id, extractionRunId));

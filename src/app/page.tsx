@@ -40,6 +40,7 @@ import {
   Pause,
   Play,
   Shuffle,
+  RotateCcw,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -134,6 +135,9 @@ interface RecentRun {
   errorCount: number;
   startedAt: Date;
   completedAt: Date | null;
+  canResume?: boolean;
+  emailsRemaining?: number;
+  totalEmailsInSet?: number;
 }
 
 export default function DashboardPage() {
@@ -610,6 +614,170 @@ export default function DashboardPage() {
     }
   };
 
+  // Resume a failed extraction run
+  const handleResumeRun = async (run: RecentRun) => {
+    try {
+      toast.info(`Resuming run v${run.version}...`);
+
+      // Use the streaming endpoint with resumeRunId
+      const res = await fetch("/api/jobs/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "extraction",
+          options: {
+            resumeRunId: run.id,
+            concurrency: 3,
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        try {
+          const data = JSON.parse(text);
+          toast.error(data.error || "Failed to resume run");
+        } catch {
+          toast.error("Failed to resume run");
+        }
+        return;
+      }
+
+      toast.success(`Resuming run v${run.version} - ${run.emailsRemaining} emails remaining`);
+
+      // Track the streaming job locally
+      let streamingJobId: string | null = null;
+
+      // Process the SSE stream
+      const reader = res.body?.getReader();
+      if (!reader) {
+        toast.error("Failed to read extraction stream");
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const event = JSON.parse(line.slice(6));
+
+                switch (event.type) {
+                  case "started":
+                    streamingJobId = event.jobId;
+                    setActiveJobs((prev) => [
+                      ...prev,
+                      {
+                        id: event.jobId,
+                        type: "extraction",
+                        status: "running",
+                        totalItems: event.totalItems,
+                        processedItems: 0,
+                        failedItems: 0,
+                        skippedItems: 0,
+                        informationalItems: 0,
+                        transactionsCreated: 0,
+                        errorMessage: null,
+                        modelId: event.modelId,
+                        modelName: event.modelName,
+                        startedAt: new Date().toISOString(),
+                        completedAt: null,
+                      },
+                    ]);
+                    // Remove from recent runs since it's now active
+                    setRecentRuns((prev) => prev.filter((r) => r.id !== run.id));
+                    break;
+
+                  case "progress":
+                    if (streamingJobId) {
+                      setActiveJobs((prev) =>
+                        prev.map((job) =>
+                          job.id === streamingJobId
+                            ? {
+                                ...job,
+                                processedItems: event.processedItems,
+                                failedItems: event.failedItems,
+                                informationalItems: event.informationalItems,
+                                totalItems: event.totalItems,
+                              }
+                            : job
+                        )
+                      );
+                    }
+                    break;
+
+                  case "batch_committed":
+                    if (streamingJobId) {
+                      setActiveJobs((prev) =>
+                        prev.map((job) =>
+                          job.id === streamingJobId
+                            ? {
+                                ...job,
+                                transactionsCreated: event.totalTransactionsCommitted,
+                              }
+                            : job
+                        )
+                      );
+                    }
+                    break;
+
+                  case "completed":
+                    toast.success(
+                      `Run v${run.version} resumed and completed! ${event.transactionsCreated} total transactions from ${event.emailsProcessed} emails`
+                    );
+                    if (streamingJobId) {
+                      setActiveJobs((prev) =>
+                        prev.filter((job) => job.id !== streamingJobId)
+                      );
+                    }
+                    fetchRecentRuns();
+                    break;
+
+                  case "error":
+                    toast.error(`Resume failed: ${event.error}`);
+                    if (streamingJobId) {
+                      setActiveJobs((prev) =>
+                        prev.filter((job) => job.id !== streamingJobId)
+                      );
+                    }
+                    fetchRecentRuns();
+                    break;
+
+                  case "done":
+                    break;
+                }
+              } catch (e) {
+                console.error("Failed to parse SSE event:", line, e);
+              }
+            }
+          }
+        }
+      } catch (streamError) {
+        console.error("Stream error:", streamError);
+        toast.error("Resume stream interrupted");
+        if (streamingJobId) {
+          setActiveJobs((prev) =>
+            prev.filter((job) => job.id !== streamingJobId)
+          );
+        }
+        fetchRecentRuns();
+      }
+    } catch (error) {
+      console.error("Resume run error:", error);
+      toast.error("Failed to resume run");
+    }
+  };
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "running":
@@ -1017,28 +1185,53 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Recent Completed Runs */}
+        {/* Recent Runs */}
         {recentRuns.length > 0 && (
           <div className="mb-8">
             <h2 className="text-lg font-semibold text-gray-900 mb-4">
-              Recent Completed Runs
+              Recent Runs
             </h2>
             <div className="space-y-4">
               {recentRuns.map((run) => (
-                <Link key={run.id} href={`/runs/${run.id}`}>
-                  <Card className="hover:shadow-md transition-shadow cursor-pointer">
-                    <CardContent className="pt-6">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <Badge variant="secondary">v{run.version}</Badge>
-                          <span className="font-medium">
-                            {run.name || run.setName || "Untitled Run"}
-                          </span>
-                        </div>
+                <Card key={run.id} className="hover:shadow-md transition-shadow">
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between mb-2">
+                      <Link href={`/runs/${run.id}`} className="flex items-center gap-2 flex-1">
+                        <Badge variant="secondary">v{run.version}</Badge>
+                        <span className="font-medium">
+                          {run.name || run.setName || "Untitled Run"}
+                        </span>
+                        {run.status === "failed" && (
+                          <Badge variant="destructive">Failed</Badge>
+                        )}
+                        {run.status === "completed" && (
+                          <Badge variant="outline" className="text-green-600 border-green-200">
+                            Completed
+                          </Badge>
+                        )}
+                      </Link>
+                      <div className="flex items-center gap-3">
+                        {run.status === "failed" && run.canResume && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1 text-blue-600 border-blue-200 hover:bg-blue-50"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleResumeRun(run);
+                            }}
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                            Resume ({run.emailsRemaining} remaining)
+                          </Button>
+                        )}
                         <div className="text-sm text-gray-500">
                           {run.completedAt && new Date(run.completedAt).toLocaleString()}
                         </div>
                       </div>
+                    </div>
+                    <Link href={`/runs/${run.id}`}>
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                         <div>
                           <div className="text-gray-500">Model</div>
@@ -1050,7 +1243,12 @@ export default function DashboardPage() {
                         </div>
                         <div>
                           <div className="text-gray-500">Processed</div>
-                          <div className="font-medium">{run.emailsProcessed} emails</div>
+                          <div className="font-medium">
+                            {run.emailsProcessed} emails
+                            {run.status === "failed" && run.totalEmailsInSet && (
+                              <span className="text-gray-400"> / {run.totalEmailsInSet}</span>
+                            )}
+                          </div>
                         </div>
                         <div>
                           <div className="text-gray-500">Extracted</div>
@@ -1071,9 +1269,9 @@ export default function DashboardPage() {
                           )}
                         </div>
                       )}
-                    </CardContent>
-                  </Card>
-                </Link>
+                    </Link>
+                  </CardContent>
+                </Card>
               ))}
             </div>
           </div>

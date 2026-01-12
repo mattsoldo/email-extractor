@@ -11,6 +11,9 @@ export const dynamic = "force-dynamic";
  * This endpoint keeps the connection open and streams progress updates
  * using Server-Sent Events (SSE). The extraction runs synchronously
  * within this request, avoiding the serverless timeout issue.
+ *
+ * Supports resuming failed/stalled runs via the resumeRunId option.
+ * When resuming, setId and promptId are optional (taken from existing run).
  */
 export async function POST(request: NextRequest) {
   const body = await request.json();
@@ -23,18 +26,23 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  if (!options?.setId) {
-    return new Response(JSON.stringify({ error: "setId is required for extraction" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+  // When resuming, setId and promptId are optional (taken from the existing run)
+  const isResume = !!options?.resumeRunId;
 
-  if (!options?.promptId) {
-    return new Response(JSON.stringify({ error: "promptId is required for extraction" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+  if (!isResume) {
+    if (!options?.setId) {
+      return new Response(JSON.stringify({ error: "setId is required for extraction (unless resuming)" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (!options?.promptId) {
+      return new Response(JSON.stringify({ error: "promptId is required for extraction (unless resuming)" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
   }
 
   // Create a readable stream for SSE
@@ -51,6 +59,7 @@ export async function POST(request: NextRequest) {
           customPromptContent: options.customPromptContent,
           concurrency: options.concurrency || 3,
           sampleSize: options.sampleSize,
+          resumeRunId: options.resumeRunId,
         })) {
           // Format as SSE
           const data = JSON.stringify(event);

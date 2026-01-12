@@ -53,10 +53,27 @@ interface Transaction {
   type: string;
   amount: string | null;
   currency: string | null;
+  description: string | null;
   symbol: string | null;
+  category: string | null;
   quantity: string | null;
+  quantityExecuted: string | null;
+  quantityRemaining: string | null;
   price: string | null;
+  executionPrice: string | null;
+  priceType: string | null;
+  limitPrice: string | null;
   fees: string | null;
+  contractSize: number | null;
+  orderId: string | null;
+  orderType: string | null;
+  orderQuantity: string | null;
+  orderPrice: string | null;
+  orderStatus: string | null;
+  timeInForce: string | null;
+  referenceNumber: string | null;
+  partiallyExecuted: boolean | null;
+  executionTime: string | null;
   date: string;
   accountId: string | null;
   toAccountId: string | null;
@@ -71,6 +88,7 @@ interface TransactionComparison {
   runBTransaction: Transaction | null;
   status: "match" | "different" | "only_a" | "only_b";
   differences: string[];
+  dataKeyDifferences: string[];
   winnerTransactionId: string | null;
 }
 
@@ -535,6 +553,7 @@ function ComparePageContent() {
                 <div className="text-purple-700">{runBLabel}</div>
               </div>
 
+              {/* Core fields */}
               {renderTransactionDetail(
                 "Type",
                 item.runATransaction?.type,
@@ -554,28 +573,22 @@ function ComparePageContent() {
                 item.differences.includes("currency")
               )}
               {renderTransactionDetail(
+                "Description",
+                item.runATransaction?.description,
+                item.runBTransaction?.description,
+                item.differences.includes("description")
+              )}
+              {renderTransactionDetail(
                 "Symbol",
                 item.runATransaction?.symbol,
                 item.runBTransaction?.symbol,
                 item.differences.includes("symbol")
               )}
               {renderTransactionDetail(
-                "Quantity",
-                item.runATransaction?.quantity,
-                item.runBTransaction?.quantity,
-                item.differences.includes("quantity")
-              )}
-              {renderTransactionDetail(
-                "Price",
-                item.runATransaction?.price,
-                item.runBTransaction?.price,
-                item.differences.includes("price")
-              )}
-              {renderTransactionDetail(
-                "Fees",
-                item.runATransaction?.fees,
-                item.runBTransaction?.fees,
-                item.differences.includes("fees")
+                "Category",
+                item.runATransaction?.category,
+                item.runBTransaction?.category,
+                item.differences.includes("category")
               )}
               {renderTransactionDetail(
                 "Date",
@@ -583,6 +596,124 @@ function ComparePageContent() {
                 item.runBTransaction?.date,
                 item.differences.includes("date")
               )}
+
+              {/* Quantity fields */}
+              {renderTransactionDetail(
+                "Quantity",
+                item.runATransaction?.quantity,
+                item.runBTransaction?.quantity,
+                item.differences.includes("quantity")
+              )}
+              {renderTransactionDetail(
+                "Qty Executed",
+                item.runATransaction?.quantityExecuted,
+                item.runBTransaction?.quantityExecuted,
+                item.differences.includes("quantityExecuted")
+              )}
+              {renderTransactionDetail(
+                "Qty Remaining",
+                item.runATransaction?.quantityRemaining,
+                item.runBTransaction?.quantityRemaining,
+                item.differences.includes("quantityRemaining")
+              )}
+
+              {/* Price fields */}
+              {renderTransactionDetail(
+                "Price",
+                item.runATransaction?.price,
+                item.runBTransaction?.price,
+                item.differences.includes("price")
+              )}
+              {renderTransactionDetail(
+                "Execution Price",
+                item.runATransaction?.executionPrice,
+                item.runBTransaction?.executionPrice,
+                item.differences.includes("executionPrice")
+              )}
+              {renderTransactionDetail(
+                "Price Type",
+                item.runATransaction?.priceType,
+                item.runBTransaction?.priceType,
+                item.differences.includes("priceType")
+              )}
+              {renderTransactionDetail(
+                "Limit Price",
+                item.runATransaction?.limitPrice,
+                item.runBTransaction?.limitPrice,
+                item.differences.includes("limitPrice")
+              )}
+              {renderTransactionDetail(
+                "Fees",
+                item.runATransaction?.fees,
+                item.runBTransaction?.fees,
+                item.differences.includes("fees")
+              )}
+
+              {/* Options fields */}
+              {renderTransactionDetail(
+                "Contract Size",
+                item.runATransaction?.contractSize,
+                item.runBTransaction?.contractSize,
+                item.differences.includes("contractSize")
+              )}
+
+              {/* Order tracking fields */}
+              {renderTransactionDetail(
+                "Order ID",
+                item.runATransaction?.orderId,
+                item.runBTransaction?.orderId,
+                item.differences.includes("orderId")
+              )}
+              {renderTransactionDetail(
+                "Order Type",
+                item.runATransaction?.orderType,
+                item.runBTransaction?.orderType,
+                item.differences.includes("orderType")
+              )}
+              {renderTransactionDetail(
+                "Order Quantity",
+                item.runATransaction?.orderQuantity,
+                item.runBTransaction?.orderQuantity,
+                item.differences.includes("orderQuantity")
+              )}
+              {renderTransactionDetail(
+                "Order Price",
+                item.runATransaction?.orderPrice,
+                item.runBTransaction?.orderPrice,
+                item.differences.includes("orderPrice")
+              )}
+              {renderTransactionDetail(
+                "Order Status",
+                item.runATransaction?.orderStatus,
+                item.runBTransaction?.orderStatus,
+                item.differences.includes("orderStatus")
+              )}
+              {renderTransactionDetail(
+                "Time in Force",
+                item.runATransaction?.timeInForce,
+                item.runBTransaction?.timeInForce,
+                item.differences.includes("timeInForce")
+              )}
+              {renderTransactionDetail(
+                "Reference #",
+                item.runATransaction?.referenceNumber,
+                item.runBTransaction?.referenceNumber,
+                item.differences.includes("referenceNumber")
+              )}
+              {renderTransactionDetail(
+                "Partially Executed",
+                item.runATransaction?.partiallyExecuted ? "Yes" : item.runATransaction?.partiallyExecuted === false ? "No" : null,
+                item.runBTransaction?.partiallyExecuted ? "Yes" : item.runBTransaction?.partiallyExecuted === false ? "No" : null,
+                item.differences.includes("partiallyExecuted")
+              )}
+              {renderTransactionDetail(
+                "Execution Time",
+                item.runATransaction?.executionTime,
+                item.runBTransaction?.executionTime,
+                item.differences.includes("executionTime")
+              )}
+
+              {/* Confidence - never flagged as different */}
               {renderTransactionDetail(
                 "Confidence",
                 item.runATransaction?.confidence
@@ -593,6 +724,31 @@ function ComparePageContent() {
                   : null,
                 false
               )}
+
+              {/* Additional Data fields (from the data JSON) */}
+              {(() => {
+                const dataA = (item.runATransaction?.data || {}) as Record<string, unknown>;
+                const dataB = (item.runBTransaction?.data || {}) as Record<string, unknown>;
+                const allKeys = new Set([...Object.keys(dataA), ...Object.keys(dataB)]);
+
+                if (allKeys.size === 0) return null;
+
+                return (
+                  <>
+                    <div className="py-2 px-3 bg-gray-50 border-t border-b text-sm font-medium text-gray-600">
+                      Additional Data
+                    </div>
+                    {Array.from(allKeys).sort().map((key) =>
+                      renderTransactionDetail(
+                        key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim(),
+                        dataA[key],
+                        dataB[key],
+                        item.dataKeyDifferences?.includes(key) || false
+                      )
+                    )}
+                  </>
+                );
+              })()}
             </div>
 
             {/* View Email button and preview */}

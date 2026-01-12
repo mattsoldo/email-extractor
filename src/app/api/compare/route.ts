@@ -10,30 +10,70 @@ interface TransactionComparison {
   runBTransaction: typeof transactions.$inferSelect | null;
   status: "match" | "different" | "only_a" | "only_b";
   differences: string[];
+  dataKeyDifferences: string[]; // Keys from the data field that differ
   winnerTransactionId: string | null; // The email's current winner
 }
 
-// Fields to compare between transactions
+// Fields to compare between transactions (excluding confidence per user request)
 const COMPARE_FIELDS = [
+  // Core fields
   "type",
   "amount",
   "currency",
+  "description",
   "symbol",
-  "quantity",
-  "price",
-  "fees",
+  "category",
   "date",
+  // Account fields
   "accountId",
   "toAccountId",
+  // Quantity fields
+  "quantity",
+  "quantityExecuted",
+  "quantityRemaining",
+  // Price fields
+  "price",
+  "executionPrice",
+  "priceType",
+  "limitPrice",
+  // Fees
+  "fees",
+  // Options
+  "contractSize",
+  // Order tracking
+  "orderId",
+  "orderType",
+  "orderQuantity",
+  "orderPrice",
+  "orderStatus",
+  "timeInForce",
+  "referenceNumber",
+  "partiallyExecuted",
+  "executionTime",
 ] as const;
+
+// Numeric fields for proper comparison
+const NUMERIC_FIELDS = [
+  "amount",
+  "quantity",
+  "quantityExecuted",
+  "quantityRemaining",
+  "price",
+  "executionPrice",
+  "limitPrice",
+  "fees",
+  "contractSize",
+  "orderQuantity",
+  "orderPrice",
+];
 
 function compareTransactions(
   a: typeof transactions.$inferSelect | null,
   b: typeof transactions.$inferSelect | null
-): { status: TransactionComparison["status"]; differences: string[] } {
-  if (!a && !b) return { status: "match", differences: [] };
-  if (!a) return { status: "only_b", differences: ["Transaction only in Run B"] };
-  if (!b) return { status: "only_a", differences: ["Transaction only in Run A"] };
+): { status: TransactionComparison["status"]; differences: string[]; dataKeyDifferences: string[] } {
+  if (!a && !b) return { status: "match", differences: [], dataKeyDifferences: [] };
+  if (!a) return { status: "only_b", differences: ["Transaction only in Run B"], dataKeyDifferences: [] };
+  if (!b) return { status: "only_a", differences: ["Transaction only in Run A"], dataKeyDifferences: [] };
 
   const differences: string[] = [];
 
@@ -51,11 +91,19 @@ function compareTransactions(
       continue;
     }
 
-    // Handle numeric comparison (amounts, quantities)
-    if (["amount", "quantity", "price", "fees"].includes(field)) {
+    // Handle numeric comparison
+    if (NUMERIC_FIELDS.includes(field)) {
       const numA = valA ? parseFloat(String(valA)) : null;
       const numB = valB ? parseFloat(String(valB)) : null;
       if (numA !== numB) {
+        differences.push(field);
+      }
+      continue;
+    }
+
+    // Handle boolean comparison
+    if (field === "partiallyExecuted") {
+      if (Boolean(valA) !== Boolean(valB)) {
         differences.push(field);
       }
       continue;
@@ -67,9 +115,31 @@ function compareTransactions(
     }
   }
 
+  // Compare data field (additional key-value pairs)
+  const dataKeyDifferences: string[] = [];
+  const dataA = (a.data || {}) as Record<string, unknown>;
+  const dataB = (b.data || {}) as Record<string, unknown>;
+  const allDataKeys = new Set([...Object.keys(dataA), ...Object.keys(dataB)]);
+
+  for (const key of allDataKeys) {
+    const valA = dataA[key];
+    const valB = dataB[key];
+
+    // Compare values (handle numbers, strings, null/undefined)
+    const strA = valA === null || valA === undefined ? "" : String(valA);
+    const strB = valB === null || valB === undefined ? "" : String(valB);
+
+    if (strA !== strB) {
+      dataKeyDifferences.push(key);
+      // Add to main differences to flag as "different" status
+      differences.push(`data.${key}`);
+    }
+  }
+
   return {
     status: differences.length === 0 ? "match" : "different",
     differences,
+    dataKeyDifferences,
   };
 }
 
@@ -142,7 +212,7 @@ export async function GET(request: NextRequest) {
     for (const emailId of allEmailIds) {
       const tA = byEmailA.get(emailId) || null;
       const tB = byEmailB.get(emailId) || null;
-      const { status, differences } = compareTransactions(tA, tB);
+      const { status, differences, dataKeyDifferences } = compareTransactions(tA, tB);
       const emailInfo = emailMap.get(emailId);
 
       comparisons.push({
@@ -152,6 +222,7 @@ export async function GET(request: NextRequest) {
         runBTransaction: tB,
         status,
         differences,
+        dataKeyDifferences,
         winnerTransactionId: emailInfo?.winnerTransactionId || null,
       });
     }

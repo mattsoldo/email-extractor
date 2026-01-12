@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { emails, transactions, extractionRuns, emailExtractions, aiModels, prompts } from "@/db/schema";
+import { emails, transactions, extractionRuns, emailExtractions, aiModels, prompts, discussionSummaries } from "@/db/schema";
 import { eq, inArray, desc } from "drizzle-orm";
 
 // GET /api/emails/[id] - Get single email with all transactions from different runs
@@ -78,12 +78,30 @@ export async function GET(
     .where(eq(emailExtractions.emailId, id))
     .orderBy(desc(emailExtractions.createdAt));
 
+  // Get discussion summaries for this email (evidence/discussion context)
+  const summaries = await db
+    .select({
+      id: discussionSummaries.id,
+      emailId: discussionSummaries.emailId,
+      runId: discussionSummaries.runId,
+      summary: discussionSummaries.summary,
+      relatedReferenceNumbers: discussionSummaries.relatedReferenceNumbers,
+      createdAt: discussionSummaries.createdAt,
+      // Run info for context
+      runVersion: extractionRuns.version,
+    })
+    .from(discussionSummaries)
+    .leftJoin(extractionRuns, eq(discussionSummaries.runId, extractionRuns.id))
+    .where(eq(discussionSummaries.emailId, id))
+    .orderBy(desc(discussionSummaries.createdAt));
+
   return NextResponse.json({
     email: email[0],
     transactions: emailTransactions,
     runs,
     transactionsByRun: Object.fromEntries(transactionsByRun),
     extractions,
+    discussionSummaries: summaries,
     winnerTransactionId: email[0].winnerTransactionId,
   });
 }

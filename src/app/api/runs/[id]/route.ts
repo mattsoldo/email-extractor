@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { extractionRuns, transactions, jobs, accounts, emails, emailExtractions } from "@/db/schema";
+import { extractionRuns, transactions, jobs, accounts, emails, emailExtractions, discussionSummaries } from "@/db/schema";
 import { eq, desc, count } from "drizzle-orm";
 
 // Feature flag for allowing run deletion (disable in production later)
@@ -62,10 +62,17 @@ export async function GET(
     .from(transactions)
     .where(eq(transactions.extractionRunId, id));
 
+  // Get discussion summary count for this run
+  const [{ count: discussionCount }] = await db
+    .select({ count: count() })
+    .from(discussionSummaries)
+    .where(eq(discussionSummaries.runId, id));
+
   return NextResponse.json({
     run: {
       ...run.run,
       job: run.job,
+      discussionCount,
     },
     transactions: txResults.map((r) => ({
       ...r.transaction,
@@ -167,6 +174,11 @@ export async function DELETE(
       .where(eq(emailExtractions.runId, id))
       .returning({ id: emailExtractions.id });
 
+    const deletedSummaries = await db
+      .delete(discussionSummaries)
+      .where(eq(discussionSummaries.runId, id))
+      .returning({ id: discussionSummaries.id });
+
     await db
       .delete(extractionRuns)
       .where(eq(extractionRuns.id, id));
@@ -176,6 +188,7 @@ export async function DELETE(
       deleted: {
         transactions: deletedTx.length,
         emailExtractions: deletedExtractions.length,
+        discussionSummaries: deletedSummaries.length,
         run: 1,
       },
       message: `Deleted run "${run.name || `v${run.version}`}" with ${deletedTx.length} transactions`,

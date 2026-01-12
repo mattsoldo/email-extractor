@@ -8,6 +8,7 @@ import {
   emailExtractions,
   extractionLogs,
   prompts,
+  discussionSummaries,
   jobs,
 } from "@/db/schema";
 import { eq, inArray, desc } from "drizzle-orm";
@@ -37,6 +38,8 @@ async function processEmail(
     emailType: string;
     transactions: Array<Record<string, unknown>>;
     extractionNotes?: string;
+    discussionSummary?: string | null;
+    relatedReferenceNumbers?: string[];
   };
   processingTimeMs: number;
   error?: string;
@@ -81,6 +84,8 @@ async function processEmail(
         emailType: extraction.emailType,
         transactions: extraction.transactions as Array<Record<string, unknown>>,
         extractionNotes: extraction.extractionNotes || undefined,
+        discussionSummary: extraction.discussionSummary ?? null,
+        relatedReferenceNumbers: extraction.relatedReferenceNumbers ?? [],
       },
       processingTimeMs: endTime - startTime,
     };
@@ -479,10 +484,19 @@ export const extractionJob = inngest.createFunction(
           extractionNotes?: string;
           skipReason?: string;
           informationalNotes?: string;
+          discussionSummary?: string | null;
+          relatedReferenceNumbers?: string[];
         };
         confidence: string | null;
         processingTimeMs: number;
         transactionIds: string[];
+      }> = [];
+      const discussionSummariesToInsert: Array<{
+        id: string;
+        emailId: string;
+        runId: string;
+        summary: string;
+        relatedReferenceNumbers: string[];
       }> = [];
       const errorLogsToInsert: Array<{
         id: string;
@@ -503,8 +517,21 @@ export const extractionJob = inngest.createFunction(
         if (result.success && result.extraction) {
           const extraction = result.extraction;
           const txIds: string[] = [];
+          const discussionSummary = extraction.discussionSummary?.trim();
+          const isEvidence = extraction.emailType === "evidence";
+          if (discussionSummary) {
+            discussionSummariesToInsert.push({
+              id: uuid(),
+              emailId: result.emailId,
+              runId: runInfo.extractionRunId,
+              summary: discussionSummary,
+              relatedReferenceNumbers: Array.isArray(extraction.relatedReferenceNumbers)
+                ? extraction.relatedReferenceNumbers
+                : [],
+            });
+          }
 
-          if (extraction.isTransactional && extraction.transactions.length > 0) {
+          if (!isEvidence && extraction.isTransactional && extraction.transactions.length > 0) {
             for (const txData of extraction.transactions) {
               const typedTxData = txData as Record<string, unknown>;
 
@@ -560,6 +587,8 @@ export const extractionJob = inngest.createFunction(
                 emailType: extraction.emailType,
                 transactions: extraction.transactions,
                 extractionNotes: extraction.extractionNotes,
+                discussionSummary: extraction.discussionSummary ?? null,
+                relatedReferenceNumbers: extraction.relatedReferenceNumbers ?? [],
               },
               confidence: avgConfidence ? avgConfidence.toFixed(2) : null,
               processingTimeMs: result.processingTimeMs,
@@ -577,6 +606,8 @@ export const extractionJob = inngest.createFunction(
                 emailType: extraction.emailType,
                 transactions: extraction.transactions,
                 extractionNotes: extraction.extractionNotes,
+                discussionSummary: extraction.discussionSummary ?? null,
+                relatedReferenceNumbers: extraction.relatedReferenceNumbers ?? [],
               },
               confidence: null,
               processingTimeMs: result.processingTimeMs,
@@ -655,6 +686,13 @@ export const extractionJob = inngest.createFunction(
         console.log(`[Inngest] Inserting ${extractionsToInsert.length} extractions`);
         for (let i = 0; i < extractionsToInsert.length; i += DB_BATCH_SIZE) {
           await db.insert(emailExtractions).values(extractionsToInsert.slice(i, i + DB_BATCH_SIZE));
+        }
+      }
+
+      if (discussionSummariesToInsert.length > 0) {
+        console.log(`[Inngest] Inserting ${discussionSummariesToInsert.length} discussion summaries`);
+        for (let i = 0; i < discussionSummariesToInsert.length; i += DB_BATCH_SIZE) {
+          await db.insert(discussionSummaries).values(discussionSummariesToInsert.slice(i, i + DB_BATCH_SIZE));
         }
       }
 

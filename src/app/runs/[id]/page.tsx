@@ -25,6 +25,7 @@ import {
   FileText,
   History,
   ExternalLink,
+  MessageCircle,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -39,6 +40,7 @@ interface ExtractionRun {
   transactionsCreated: number;
   informationalCount: number;
   errorCount: number;
+  discussionCount?: number;
   config: Record<string, unknown> | null;
   stats: {
     byType: Record<string, number>;
@@ -207,7 +209,7 @@ export default function RunDetailPage() {
         </div>
 
         {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm text-gray-500 font-normal">
@@ -240,6 +242,25 @@ export default function RunDetailPage() {
               <div className="text-2xl font-bold text-green-600">
                 {run.transactionsCreated}
               </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm text-gray-500 font-normal">
+                Discussions
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {run.discussionCount && run.discussionCount > 0 ? (
+                <Link href={`/discussions?runId=${run.id}`}>
+                  <div className="text-2xl font-bold text-purple-600 hover:underline cursor-pointer">
+                    {run.discussionCount}
+                  </div>
+                </Link>
+              ) : (
+                <div className="text-2xl font-bold text-gray-400">0</div>
+              )}
             </CardContent>
           </Card>
 
@@ -289,6 +310,19 @@ export default function RunDetailPage() {
               <div>
                 <span className="text-gray-500">Informational:</span>{" "}
                 <span className="text-blue-600">{run.informationalCount}</span>
+              </div>
+              <div>
+                <span className="text-gray-500">Discussions:</span>{" "}
+                {run.discussionCount && run.discussionCount > 0 ? (
+                  <Link
+                    href={`/discussions?runId=${run.id}`}
+                    className="text-purple-600 hover:underline"
+                  >
+                    {run.discussionCount}
+                  </Link>
+                ) : (
+                  <span className="text-gray-400">0</span>
+                )}
               </div>
               <div>
                 <span className="text-gray-500">Errors:</span>{" "}

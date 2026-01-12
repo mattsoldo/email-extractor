@@ -25,6 +25,8 @@ import {
   Trophy,
   Cpu,
   Scale,
+  MessageSquare,
+  Hash,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -85,6 +87,16 @@ interface EmailExtraction {
   promptName: string | null;
 }
 
+interface DiscussionSummary {
+  id: string;
+  emailId: string;
+  runId: string;
+  summary: string;
+  relatedReferenceNumbers: string[] | null;
+  createdAt: string;
+  runVersion: number | null;
+}
+
 export default function EmailViewerPage() {
   const params = useParams();
   const router = useRouter();
@@ -101,6 +113,7 @@ export default function EmailViewerPage() {
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [transactionsByRun, setTransactionsByRun] = useState<Record<string, Transaction[]>>({});
   const [extractions, setExtractions] = useState<EmailExtraction[]>([]);
+  const [discussionSummaries, setDiscussionSummaries] = useState<DiscussionSummary[]>([]);
   const [winnerTransactionId, setWinnerTransactionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("rendered");
@@ -122,6 +135,7 @@ export default function EmailViewerPage() {
       setRuns(data.runs || []);
       setTransactionsByRun(data.transactionsByRun || {});
       setExtractions(data.extractions || []);
+      setDiscussionSummaries(data.discussionSummaries || []);
       setWinnerTransactionId(data.winnerTransactionId || null);
     } catch (error) {
       console.error("Failed to fetch email:", error);
@@ -402,6 +416,57 @@ export default function EmailViewerPage() {
             {email.informationalNotes && (
               <div className="mt-4 p-3 bg-blue-50 rounded-lg text-sm text-blue-700">
                 {email.informationalNotes}
+              </div>
+            )}
+
+            {/* Discussion Summaries - Evidence/Discussion Context */}
+            {discussionSummaries.length > 0 && (
+              <div className="mt-4 space-y-3">
+                {discussionSummaries.map((summary) => (
+                  <div
+                    key={summary.id}
+                    className="p-4 bg-purple-50 border border-purple-200 rounded-lg"
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="gap-1 text-purple-700 border-purple-300 bg-purple-100">
+                          <MessageSquare className="h-3 w-3" />
+                          Evidence
+                        </Badge>
+                        {summary.runVersion && (
+                          <span className="text-xs text-purple-500">
+                            v{summary.runVersion}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-xs text-purple-400">
+                        {format(new Date(summary.createdAt), "MMM d, yyyy")}
+                      </span>
+                    </div>
+                    <p className="text-sm text-purple-900 leading-relaxed">
+                      {summary.summary}
+                    </p>
+                    {summary.relatedReferenceNumbers && summary.relatedReferenceNumbers.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-purple-200">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs text-purple-600 font-medium flex items-center gap-1">
+                            <Hash className="h-3 w-3" />
+                            Reference Numbers:
+                          </span>
+                          {summary.relatedReferenceNumbers.map((ref, i) => (
+                            <Badge
+                              key={i}
+                              variant="secondary"
+                              className="text-xs bg-purple-100 text-purple-700 font-mono"
+                            >
+                              {ref}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>

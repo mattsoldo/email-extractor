@@ -40,6 +40,8 @@ describe("ai-extractor", () => {
           vestDate: null,
           additionalFields: [],
         }],
+        discussionSummary: null,
+        relatedReferenceNumbers: [],
         extractionNotes: null,
       };
 
@@ -79,6 +81,8 @@ describe("ai-extractor", () => {
           vestDate: null,
           additionalFields: [{ key: "orderNumber", value: "12345" }],
         }],
+        discussionSummary: null,
+        relatedReferenceNumbers: [],
         extractionNotes: null,
       };
 
@@ -118,6 +122,8 @@ describe("ai-extractor", () => {
           vestDate: null,
           additionalFields: [],
         }],
+        discussionSummary: null,
+        relatedReferenceNumbers: [],
         extractionNotes: "Premium paid for 10 contracts",
       };
 
@@ -157,6 +163,8 @@ describe("ai-extractor", () => {
           vestDate: null,
           additionalFields: [],
         }],
+        discussionSummary: null,
+        relatedReferenceNumbers: [],
         extractionNotes: null,
       };
 
@@ -169,6 +177,8 @@ describe("ai-extractor", () => {
         isTransactional: false,
         emailType: "marketing" as const,
         transactions: [],
+        discussionSummary: null,
+        relatedReferenceNumbers: [],
         extractionNotes: "Marketing email - no transaction",
       };
 
@@ -186,6 +196,8 @@ describe("ai-extractor", () => {
             confidence: 0.5,
             transactionDate: "2024-01-15",
           }],
+          discussionSummary: null,
+          relatedReferenceNumbers: [],
           extractionNotes: null,
         };
 
@@ -202,6 +214,8 @@ describe("ai-extractor", () => {
             confidence: 1.5, // Invalid
             transactionDate: "2024-01-15",
           }],
+          discussionSummary: null,
+          relatedReferenceNumbers: [],
           extractionNotes: null,
         };
 
@@ -218,6 +232,8 @@ describe("ai-extractor", () => {
             confidence: -0.1,
             transactionDate: "2024-01-15",
           }],
+          discussionSummary: null,
+          relatedReferenceNumbers: [],
           extractionNotes: null,
         };
 
@@ -235,6 +251,8 @@ describe("ai-extractor", () => {
             transactionDate: "2024-01-15",
             optionType: "straddle" as any, // Invalid - should be call or put
           }],
+          discussionSummary: null,
+          relatedReferenceNumbers: [],
           extractionNotes: null,
         };
 
@@ -252,6 +270,8 @@ describe("ai-extractor", () => {
             transactionDate: "2024-01-15",
             orderType: "market_buy" as any, // Invalid - should be buy, sell, etc.
           }],
+          discussionSummary: null,
+          relatedReferenceNumbers: [],
           extractionNotes: null,
         };
 
@@ -310,6 +330,8 @@ describe("ai-extractor", () => {
             vestDate: null,
             additionalFields: [],
           }],
+          discussionSummary: null,
+          relatedReferenceNumbers: [],
           extractionNotes: null,
         };
 

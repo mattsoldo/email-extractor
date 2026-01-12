@@ -31,10 +31,13 @@ export async function GET(request: NextRequest) {
         informationalCount: extractionRuns.informationalCount,
         startedAt: extractionRuns.startedAt,
         emailCount: emailSets.emailCount,
+        // Get actual totalItems from the job (respects sampleSize)
+        jobTotalItems: jobs.totalItems,
       })
       .from(extractionRuns)
       .leftJoin(aiModels, eq(extractionRuns.modelId, aiModels.id))
       .leftJoin(emailSets, eq(extractionRuns.setId, emailSets.id))
+      .leftJoin(jobs, eq(extractionRuns.jobId, jobs.id))
       .where(eq(extractionRuns.status, "running"))
       .orderBy(desc(extractionRuns.startedAt));
 
@@ -43,7 +46,8 @@ export async function GET(request: NextRequest) {
       id: run.jobId || run.id,
       type: "extraction" as const,
       status: "running" as const,
-      totalItems: run.emailCount || run.emailsProcessed,
+      // Use job's totalItems (set after sampling), fallback to emailCount, then emailsProcessed
+      totalItems: run.jobTotalItems || run.emailCount || run.emailsProcessed,
       processedItems: run.emailsProcessed,
       failedItems: run.errorCount,
       skippedItems: 0,

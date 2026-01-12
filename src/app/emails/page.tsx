@@ -247,8 +247,8 @@ function EmailsContent() {
         );
       case "informational":
         return (
-          <Badge variant="outline" className="gap-1 text-blue-600">
-            <Info className="h-3 w-3" /> Informational
+          <Badge variant="outline" className="gap-1 text-purple-600">
+            <Info className="h-3 w-3" /> Evidence
           </Badge>
         );
       case "processing":
@@ -477,7 +477,7 @@ function EmailsContent() {
                   Completed ({statusCounts.completed || 0})
                 </SelectItem>
                 <SelectItem value="informational">
-                  Informational ({statusCounts.informational || 0})
+                  Evidence ({statusCounts.informational || 0})
                 </SelectItem>
                 <SelectItem value="failed">
                   Failed ({statusCounts.failed || 0})

@@ -7,6 +7,50 @@ import type { JSONSchema7 } from "json-schema";
 import type { ParsedEmail } from "./email-parser";
 import { getModelConfig, DEFAULT_MODEL_ID, type ModelConfig, type ModelProvider } from "./model-config";
 
+/**
+ * Attempts to repair common JSON syntax errors from LLM output
+ */
+function repairJson(jsonString: string): string {
+  let repaired = jsonString;
+
+  // Remove any markdown code blocks
+  repaired = repaired.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
+
+  // Replace single quotes with double quotes (but not within already double-quoted strings)
+  // This is a simplified approach - handles most common cases
+  repaired = repaired.replace(/'/g, '"');
+
+  // Remove trailing commas before } or ]
+  repaired = repaired.replace(/,\s*([}\]])/g, '$1');
+
+  // Fix unquoted property names (simple cases)
+  // Matches word characters followed by colon that aren't already quoted
+  repaired = repaired.replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3');
+
+  return repaired;
+}
+
+/**
+ * Safely parse JSON with repair attempts
+ */
+function safeJsonParse<T>(jsonString: string, context: string): T {
+  // First, try parsing as-is
+  try {
+    return JSON.parse(jsonString) as T;
+  } catch (firstError) {
+    // Try to repair and parse again
+    try {
+      const repaired = repairJson(jsonString);
+      console.log(`[AI Extractor] JSON repair attempted for ${context}`);
+      return JSON.parse(repaired) as T;
+    } catch (secondError) {
+      // Log the problematic JSON for debugging
+      console.error(`[AI Extractor] Failed to parse JSON for ${context}. First 500 chars:`, jsonString.slice(0, 500));
+      throw new Error(`Failed to parse JSON response: ${firstError instanceof Error ? firstError.message : 'Unknown error'}`);
+    }
+  }
+}
+
 // Schema for a single transaction
 // Using .nullable() so fields are required but can be null (required by OpenAI structured output)
 // Using .strict() to add additionalProperties: false (required by OpenAI structured output)
@@ -131,11 +175,18 @@ const SingleTransactionSchema = z.object({
 export const TransactionExtractionSchema = z.object({
   isTransactional: z.boolean().describe("Whether this email contains any financial transactions"),
   emailType: z
-    .enum(["transactional", "informational", "marketing", "alert", "statement", "other"])
+    .enum(["transactional", "evidence", "informational", "marketing", "alert", "statement", "other"])
     .describe("The type of email"),
   transactions: z
     .array(SingleTransactionSchema)
     .describe("Array of transactions found in this email (can be empty if non-transactional)"),
+  discussionSummary: z
+    .string()
+    .nullable()
+    .describe("Concise summary for evidence/discussion emails (null if not evidence)"),
+  relatedReferenceNumbers: z
+    .array(z.string())
+    .describe("External reference numbers, confirmation numbers, or case IDs mentioned in evidence emails (not database IDs)"),
   extractionNotes: z
     .string()
     .nullable()
@@ -280,7 +331,7 @@ ${emailContent}`;
 IMPORTANT: You must respond with a valid JSON object matching this structure:
 {
   "isTransactional": boolean,
-  "emailType": "transactional" | "informational" | "marketing" | "alert" | "statement" | "other",
+  "emailType": "transactional" | "evidence" | "informational" | "marketing" | "alert" | "statement" | "other",
   "transactions": [
     {
       "transactionType": "dividend" | "interest" | "stock_trade" | "option_trade" | "wire_transfer_in" | "wire_transfer_out" | "funds_transfer" | "deposit" | "withdrawal" | "rsu_vest" | "rsu_release" | "account_transfer" | "fee" | "other",
@@ -311,6 +362,8 @@ IMPORTANT: You must respond with a valid JSON object matching this structure:
       "additionalFields": [{"key": string, "value": string}]
     }
   ],
+  "discussionSummary": string | null,
+  "relatedReferenceNumbers": [string],
   "extractionNotes": string | null
 }
 
@@ -329,7 +382,7 @@ Respond ONLY with the JSON object, no additional text or markdown.`;
         throw new Error("Failed to extract JSON from Anthropic response");
       }
 
-      const result = JSON.parse(jsonMatch[0]) as TransactionExtraction;
+      const result = safeJsonParse<TransactionExtraction>(jsonMatch[0], `email ${email.id}`);
       console.log(`[AI Extractor] ✓ Extraction successful for email ${email.id}: ${result.isTransactional ? result.transactions?.length + " transaction(s)" : "non-transactional"} (Anthropic text mode)`);
       return result;
     }

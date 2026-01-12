@@ -1,6 +1,6 @@
 import { v4 as uuid } from "uuid";
 import { db } from "@/db";
-import { jobs, emails, transactions, accounts, extractionLogs, extractionRuns, prompts, emailExtractions, aiModels } from "@/db/schema";
+import { jobs, emails, transactions, accounts, extractionLogs, extractionRuns, prompts, emailExtractions, aiModels, discussionSummaries } from "@/db/schema";
 import { eq, and, inArray, desc, sql } from "drizzle-orm";
 import { scanEmailDirectory, parseEmlFile, toDbEmail, classifyEmail } from "./email-parser";
 import { extractTransaction, type TransactionExtraction, type SingleTransaction, DEFAULT_MODEL_ID } from "./ai-extractor";
@@ -409,6 +409,12 @@ interface PendingEmailExtraction {
   endTime: number;
 }
 
+interface PendingDiscussionSummary {
+  emailId: string;
+  summary: string;
+  relatedReferenceNumbers: string[];
+}
+
 async function runExtractionJob(
   jobId: string,
   options: {
@@ -488,6 +494,7 @@ async function runExtractionJob(
   const pendingTransactions: PendingTransaction[] = [];
   // Collect all email extractions to create records
   const pendingExtractions: PendingEmailExtraction[] = [];
+  const pendingDiscussionSummaries: PendingDiscussionSummary[] = [];
   // Track email updates to apply atomically
   const emailUpdates: Array<{
     id: string;
@@ -610,7 +617,19 @@ async function runExtractionJob(
             endTime,
           });
 
-          if (extraction.isTransactional && extraction.transactions.length > 0) {
+          const discussionSummary = extraction.discussionSummary?.trim();
+          const isEvidence = extraction.emailType === "evidence";
+          if (discussionSummary) {
+            pendingDiscussionSummaries.push({
+              emailId: email.id,
+              summary: discussionSummary,
+              relatedReferenceNumbers: Array.isArray(extraction.relatedReferenceNumbers)
+                ? extraction.relatedReferenceNumbers
+                : [],
+            });
+          }
+
+          if (!isEvidence && extraction.isTransactional && extraction.transactions.length > 0) {
             // This email contains one or more financial transactions
             for (let txIndex = 0; txIndex < extraction.transactions.length; txIndex++) {
               const transaction = extraction.transactions[txIndex];
@@ -838,11 +857,12 @@ async function runExtractionJob(
       const extraction = pending.extraction;
       const procTimeMs = pending.endTime - pending.startTime;
       const txIds = transactionIdsByEmail.get(pending.emailId) || [];
+      const isEvidence = extraction.emailType === "evidence";
 
       let status: "completed" | "informational" | "skipped" = "completed";
       let avgConfidence: number | null = null;
 
-      if (extraction.isTransactional && extraction.transactions.length > 0) {
+      if (!isEvidence && extraction.isTransactional && extraction.transactions.length > 0) {
         status = "completed";
         const confidences = extraction.transactions
           .map(t => t.confidence)
@@ -865,6 +885,14 @@ async function runExtractionJob(
         transactionIds: txIds,
       };
     });
+
+    const discussionSummariesToInsert = pendingDiscussionSummaries.map(pending => ({
+      id: uuid(),
+      emailId: pending.emailId,
+      runId: extractionRunId,
+      summary: pending.summary,
+      relatedReferenceNumbers: pending.relatedReferenceNumbers,
+    }));
 
     // PHASE 5: Batch insert everything in a single transaction
     console.log(`[Job Manager] Phase 5: Batch inserting ${newAccountsToCreate.length} accounts, ${transactionsToInsert.length} transactions, ${extractionsToInsert.length} extractions...`);
@@ -902,6 +930,14 @@ async function runExtractionJob(
           await tx.insert(emailExtractions).values(batch);
         }
         console.log(`[Job Manager] Inserted ${extractionsToInsert.length} email extractions`);
+      }
+
+      if (discussionSummariesToInsert.length > 0) {
+        for (let i = 0; i < discussionSummariesToInsert.length; i += BATCH_SIZE) {
+          const batch = discussionSummariesToInsert.slice(i, i + BATCH_SIZE);
+          await tx.insert(discussionSummaries).values(batch);
+        }
+        console.log(`[Job Manager] Inserted ${discussionSummariesToInsert.length} discussion summaries`);
       }
 
       // Update email statuses in batches
@@ -1259,6 +1295,7 @@ export async function* runExtractionJobStreaming(
   // Pending items to commit (cleared after each DB commit batch)
   let pendingTransactions: PendingTransaction[] = [];
   let pendingExtractions: PendingEmailExtraction[] = [];
+  let pendingDiscussionSummaries: PendingDiscussionSummary[] = [];
   let emailUpdates: Array<{
     id: string;
     status: "completed" | "informational" | "failed";
@@ -1425,11 +1462,12 @@ export async function* runExtractionJobStreaming(
       const extraction = pending.extraction;
       const procTimeMs = pending.endTime - pending.startTime;
       const txIds = transactionIdsByEmail.get(pending.emailId) || [];
+      const isEvidence = extraction.emailType === "evidence";
 
       let status: "completed" | "informational" | "skipped" = "completed";
       let avgConfidence: number | null = null;
 
-      if (extraction.isTransactional && extraction.transactions.length > 0) {
+      if (!isEvidence && extraction.isTransactional && extraction.transactions.length > 0) {
         status = "completed";
         const confidences = extraction.transactions
           .map(t => t.confidence)
@@ -1452,6 +1490,14 @@ export async function* runExtractionJobStreaming(
         transactionIds: txIds,
       };
     });
+
+    const discussionSummariesToInsert = pendingDiscussionSummaries.map(pending => ({
+      id: uuid(),
+      emailId: pending.emailId,
+      runId: extractionRunId,
+      summary: pending.summary,
+      relatedReferenceNumbers: pending.relatedReferenceNumbers,
+    }));
 
     const BATCH_SIZE = 100;
     const transactionsCommitted = transactionsToInsert.length;
@@ -1481,6 +1527,13 @@ export async function* runExtractionJobStreaming(
       for (let i = 0; i < extractionsToInsert.length; i += BATCH_SIZE) {
         const batch = extractionsToInsert.slice(i, i + BATCH_SIZE);
         await db.insert(emailExtractions).values(batch);
+      }
+    }
+
+    if (discussionSummariesToInsert.length > 0) {
+      for (let i = 0; i < discussionSummariesToInsert.length; i += BATCH_SIZE) {
+        const batch = discussionSummariesToInsert.slice(i, i + BATCH_SIZE);
+        await db.insert(discussionSummaries).values(batch);
       }
     }
 
@@ -1516,6 +1569,7 @@ export async function* runExtractionJobStreaming(
     // Clear pending items
     pendingTransactions = [];
     pendingExtractions = [];
+    pendingDiscussionSummaries = [];
     emailUpdates = [];
 
     return transactionsCommitted;
@@ -1576,7 +1630,19 @@ export async function* runExtractionJobStreaming(
             endTime: extEnd,
           });
 
-          if (extraction.isTransactional && extraction.transactions.length > 0) {
+          const discussionSummary = extraction.discussionSummary?.trim();
+          const isEvidence = extraction.emailType === "evidence";
+          if (discussionSummary) {
+            pendingDiscussionSummaries.push({
+              emailId: email.id,
+              summary: discussionSummary,
+              relatedReferenceNumbers: Array.isArray(extraction.relatedReferenceNumbers)
+                ? extraction.relatedReferenceNumbers
+                : [],
+            });
+          }
+
+          if (!isEvidence && extraction.isTransactional && extraction.transactions.length > 0) {
             for (let txIndex = 0; txIndex < extraction.transactions.length; txIndex++) {
               const transaction = extraction.transactions[txIndex];
               pendingTransactions.push({

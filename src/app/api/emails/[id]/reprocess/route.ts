@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { emails, transactions, emailExtractions, extractionRuns, prompts } from "@/db/schema";
+import { emails, transactions, emailExtractions, extractionRuns, prompts, discussionSummaries } from "@/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
 import { extractTransaction } from "@/services/ai-extractor";
@@ -128,8 +128,13 @@ export async function POST(
     let transactionsCreated = 0;
     let informationalCount = 0;
     let errorCount = 0;
+    const discussionSummary = extraction.discussionSummary?.trim() || null;
+    const relatedReferenceNumbers = Array.isArray(extraction.relatedReferenceNumbers)
+      ? extraction.relatedReferenceNumbers
+      : [];
+    const isEvidence = extraction.emailType === "evidence";
 
-    if (extraction.isTransactional && extraction.transactions && extraction.transactions.length > 0) {
+    if (!isEvidence && extraction.isTransactional && extraction.transactions && extraction.transactions.length > 0) {
       // Process each transaction
       for (const txn of extraction.transactions) {
         try {
@@ -209,12 +214,24 @@ export async function POST(
         .where(eq(emails.id, emailId));
     }
 
+    if (discussionSummary) {
+      await db.insert(discussionSummaries).values({
+        id: uuid(),
+        emailId,
+        runId,
+        summary: discussionSummary,
+        relatedReferenceNumbers,
+      });
+    }
+
     // Create email extraction record with properly typed rawExtraction
     const rawExtractionData = {
       isTransactional: extraction.isTransactional,
       emailType: extraction.emailType,
       transactions: extraction.transactions as unknown as Array<Record<string, unknown>>,
       extractionNotes: extraction.extractionNotes || undefined,
+      discussionSummary,
+      relatedReferenceNumbers,
     };
 
     await db.insert(emailExtractions).values({
@@ -250,6 +267,8 @@ export async function POST(
       isTransactional: extraction.isTransactional,
       emailType: extraction.emailType,
       extractionNotes: extraction.extractionNotes,
+      discussionSummary,
+      relatedReferenceNumbers,
     });
   } catch (error) {
     console.error("Reprocess error:", error);

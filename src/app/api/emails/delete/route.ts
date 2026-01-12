@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { emails, transactions, emailExtractions, extractionLogs, emailSets } from "@/db/schema";
+import { emails, transactions, emailExtractions, extractionLogs, emailSets, discussionSummaries } from "@/db/schema";
 import { eq, inArray, sql, and, SQL } from "drizzle-orm";
 
 // POST /api/emails/delete - Bulk delete emails and associated data
@@ -74,19 +74,25 @@ export async function POST(request: NextRequest) {
       .where(inArray(emailExtractions.emailId, actualEmailIds))
       .returning({ id: emailExtractions.id });
 
-    // 3. Delete extraction logs
+    // 3. Delete discussion summaries
+    const deletedSummaries = await db
+      .delete(discussionSummaries)
+      .where(inArray(discussionSummaries.emailId, actualEmailIds))
+      .returning({ id: discussionSummaries.id });
+
+    // 4. Delete extraction logs
     const deletedLogs = await db
       .delete(extractionLogs)
       .where(inArray(extractionLogs.emailId, actualEmailIds))
       .returning({ id: extractionLogs.id });
 
-    // 4. Delete the emails
+    // 5. Delete the emails
     const deletedEmails = await db
       .delete(emails)
       .where(inArray(emails.id, actualEmailIds))
       .returning({ id: emails.id });
 
-    // 5. Update email set counts
+    // 6. Update email set counts
     for (const [setId, count] of Object.entries(setIdCounts)) {
       await db
         .update(emailSets)
@@ -102,6 +108,7 @@ export async function POST(request: NextRequest) {
       deletedCount: deletedEmails.length,
       deletedTransactions: deletedTransactions.length,
       deletedExtractions: deletedExtractions.length,
+      deletedSummaries: deletedSummaries.length,
       deletedLogs: deletedLogs.length,
     });
   } catch (error) {

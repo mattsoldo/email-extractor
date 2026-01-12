@@ -15,7 +15,7 @@ export const transactionExtractionJsonSchema = {
     },
     "emailType": {
       "type": "string",
-      "enum": ["transactional", "informational", "marketing", "alert", "statement", "other"],
+      "enum": ["transactional", "evidence", "informational", "marketing", "alert", "statement", "other"],
       "description": "The type of email"
     },
     "transactions": {
@@ -251,9 +251,19 @@ export const transactionExtractionJsonSchema = {
     "extractionNotes": {
       "type": ["string", "null"],
       "description": "Any notes about the extraction, ambiguities, or why this email is non-transactional"
+    },
+    "discussionSummary": {
+      "type": ["string", "null"],
+      "description": "Concise summary for evidence/discussion emails (null if not evidence)"
+    },
+    "relatedReferenceNumbers": {
+      "type": "array",
+      "description": "External reference numbers, confirmation numbers, or case IDs mentioned in evidence emails (not database IDs)",
+      "items": { "type": "string" },
+      "default": []
     }
   },
-  "required": ["isTransactional", "emailType", "transactions", "extractionNotes"]
+  "required": ["isTransactional", "emailType", "transactions", "discussionSummary", "relatedReferenceNumbers", "extractionNotes"]
 } as const;
 
 // Type for the schema (for use with TypeScript)

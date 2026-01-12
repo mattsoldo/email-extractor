@@ -337,6 +337,8 @@ export const emailExtractions = pgTable("email_extractions", {
     extractionNotes?: string;
     skipReason?: string;
     informationalNotes?: string;
+    discussionSummary?: string | null;
+    relatedReferenceNumbers?: string[];
   }>(),
 
   // Metrics
@@ -350,6 +352,18 @@ export const emailExtractions = pgTable("email_extractions", {
   error: text("error"),
 
   createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Discussion summaries - extracted summaries for evidence/discussion emails
+export const discussionSummaries = pgTable("discussion_summaries", {
+  id: text("id").primaryKey(),
+  emailId: text("email_id").references(() => emails.id).notNull(),
+  runId: text("run_id").references(() => extractionRuns.id).notNull(),
+  summary: text("summary").notNull(),
+  // External reference/confirmation numbers from the email (not database transaction IDs)
+  relatedReferenceNumbers: jsonb("related_reference_numbers").$type<string[]>().default([]),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 // Relations
@@ -397,6 +411,7 @@ export const extractionRunsRelations = relations(extractionRuns, ({ one, many })
     references: [emailSets.id],
   }),
   transactions: many(transactions),
+  discussionSummaries: many(discussionSummaries),
 }));
 
 export const emailSetsRelations = relations(emailSets, ({ many }) => ({
@@ -411,6 +426,7 @@ export const emailsRelations = relations(emails, ({ one, many }) => ({
   }),
   transactions: many(transactions),
   extractions: many(emailExtractions),
+  discussionSummaries: many(discussionSummaries),
   winnerTransaction: one(transactions, {
     fields: [emails.winnerTransactionId],
     references: [transactions.id],
@@ -424,6 +440,17 @@ export const emailExtractionsRelations = relations(emailExtractions, ({ one }) =
   }),
   run: one(extractionRuns, {
     fields: [emailExtractions.runId],
+    references: [extractionRuns.id],
+  }),
+}));
+
+export const discussionSummariesRelations = relations(discussionSummaries, ({ one }) => ({
+  email: one(emails, {
+    fields: [discussionSummaries.emailId],
+    references: [emails.id],
+  }),
+  run: one(extractionRuns, {
+    fields: [discussionSummaries.runId],
     references: [extractionRuns.id],
   }),
 }));
@@ -446,6 +473,8 @@ export type ExtractionRun = typeof extractionRuns.$inferSelect;
 export type NewExtractionRun = typeof extractionRuns.$inferInsert;
 export type EmailExtraction = typeof emailExtractions.$inferSelect;
 export type NewEmailExtraction = typeof emailExtractions.$inferInsert;
+export type DiscussionSummary = typeof discussionSummaries.$inferSelect;
+export type NewDiscussionSummary = typeof discussionSummaries.$inferInsert;
 export type EmailSet = typeof emailSets.$inferSelect;
 export type NewEmailSet = typeof emailSets.$inferInsert;
 export type AiModel = typeof aiModels.$inferSelect;

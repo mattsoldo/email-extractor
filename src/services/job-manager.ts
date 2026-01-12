@@ -7,6 +7,7 @@ import { extractTransaction, type TransactionExtraction, type SingleTransaction,
 import { normalizeTransaction, detectOrCreateAccount } from "./transaction-normalizer";
 import { estimateBatchCost, formatCost, getModelConfig } from "./model-config";
 import { SOFTWARE_VERSION } from "@/config/version";
+import { inngest } from "@/inngest/client";
 
 /**
  * Clean up stale "running" extraction runs left from server restarts
@@ -358,40 +359,24 @@ export async function startExtractionJob(
 
   console.log(`[Job Manager] Using prompt: ${prompt.name} (${prompt.id})${isCustomPrompt ? " [CUSTOM CONTENT]" : ""}${hasCustomSchema ? " [CUSTOM SCHEMA]" : " [DEFAULT SCHEMA]"}`);
 
-  const jobId = uuid();
-  const abortController = new AbortController();
-
-  const progress: JobProgress = {
-    id: jobId,
-    type: "extraction",
-    status: "pending",
-    totalItems: 0,
-    processedItems: 0,
-    failedItems: 0,
-    skippedItems: 0,
-    informationalItems: 0,
-    errorMessage: null,
-    startedAt: null,
-    completedAt: null,
-  };
-
-  activeJobs.set(jobId, { abortController, progress });
-
-  await db.insert(jobs).values({
-    id: jobId,
-    type: "extraction",
-    status: "pending",
-    metadata: {
-      ...options,
-      softwareVersion: SOFTWARE_VERSION,
-      isCustomPrompt, // Track if custom prompt was used
+  // Send event to Inngest to start the extraction
+  // The orchestrator function will create the job and extraction run records
+  await inngest.send({
+    name: "extraction/started",
+    data: {
+      runId: uuid(), // Will be used by orchestrator if not resuming
+      setId: options.setId,
+      modelId,
+      promptId: options.promptId,
+      sampleSize: options.sampleSize,
     },
   });
 
-  // Only pass custom schema if defined, otherwise use default Zod schema in extractTransaction
-  runExtractionJob(jobId, { ...options, promptContent: promptContentToUse, jsonSchema: hasCustomSchema ? prompt.jsonSchema : null, sampleSize: options.sampleSize }, abortController.signal);
+  console.log(`[Job Manager] Triggered Inngest extraction for set ${options.setId}`);
 
-  return jobId;
+  // Return a placeholder - the actual job ID is created by the Inngest orchestrator
+  // The UI will pick up the running job from the extraction_runs table
+  return "inngest-triggered";
 }
 
 // Type for pending transaction data collected during extraction

@@ -1350,8 +1350,48 @@ function ComparePageContent() {
                                   return items.map((item) => renderComparisonItem(item));
                                 }
 
+                                // Split groups into numeric vs non-numeric differences
+                                const splitGroups: DifferenceGroup[] = [];
+
+                                for (const group of patterns.values()) {
+                                  // Separate items with numeric differences from those without
+                                  const itemsWithNumeric = group.items.filter(item =>
+                                    item.differences.some(d => NUMERIC_FIELDS.has(d))
+                                  );
+                                  const itemsWithoutNumeric = group.items.filter(item =>
+                                    !item.differences.some(d => NUMERIC_FIELDS.has(d))
+                                  );
+
+                                  // Create group for items with numeric differences
+                                  if (itemsWithNumeric.length > 0) {
+                                    // Collect all numeric diff fields from these items
+                                    const numericFields = new Set<string>();
+                                    for (const item of itemsWithNumeric) {
+                                      for (const d of item.differences) {
+                                        if (NUMERIC_FIELDS.has(d)) numericFields.add(d);
+                                      }
+                                    }
+                                    splitGroups.push({
+                                      ...group,
+                                      items: itemsWithNumeric,
+                                      hasNumericDifferences: true,
+                                      numericDiffFields: Array.from(numericFields),
+                                    });
+                                  }
+
+                                  // Create group for items without numeric differences
+                                  if (itemsWithoutNumeric.length > 0) {
+                                    splitGroups.push({
+                                      ...group,
+                                      items: itemsWithoutNumeric,
+                                      hasNumericDifferences: false,
+                                      numericDiffFields: [],
+                                    });
+                                  }
+                                }
+
                                 // Sort groups: numeric differences first, then by item count
-                                const sortedGroups = Array.from(patterns.values()).sort((a, b) => {
+                                const sortedGroups = splitGroups.sort((a, b) => {
                                   // Numeric differences first
                                   if (a.hasNumericDifferences && !b.hasNumericDifferences) return -1;
                                   if (!a.hasNumericDifferences && b.hasNumericDifferences) return 1;

@@ -620,7 +620,7 @@ export const qaOrchestrator = inngest.createFunction(
   },
   { event: "qa/started" },
   async ({ event, step }) => {
-    const { qaRunId, sourceRunId, modelId, promptId, filters } = event.data;
+    const { qaRunId, sourceRunId, modelId, promptId, filters, sampleSize } = event.data;
 
     // Step 1: Initialize the QA run
     const runInfo = await step.run("initialize-qa-run", async () => {
@@ -663,6 +663,20 @@ export const qaOrchestrator = inngest.createFunction(
       if (filters?.maxConfidence !== undefined) {
         filteredTx = filteredTx.filter(
           (t) => t.confidence && parseFloat(t.confidence) <= filters.maxConfidence!
+        );
+      }
+
+      // Apply random sampling if sampleSize is specified
+      if (sampleSize && sampleSize > 0 && filteredTx.length > sampleSize) {
+        // Fisher-Yates shuffle for random sampling
+        const shuffled = [...filteredTx];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        filteredTx = shuffled.slice(0, sampleSize);
+        console.log(
+          `[Inngest QA] Random sampling: selected ${sampleSize} of ${txList.length} transactions`
         );
       }
 
@@ -841,6 +855,7 @@ export const qaProcessTransaction = inngest.createFunction(
     type QAModelResult = {
       success: true;
       hasIssues: boolean;
+      isMultiTransaction: boolean;
       fieldIssues: Array<{
         field: string;
         currentValue: unknown;
@@ -917,6 +932,7 @@ Please verify this transaction data against the email content and return your fi
         return {
           success: true as const,
           hasIssues: parsed.hasIssues as boolean ?? false,
+          isMultiTransaction: parsed.isMultiTransaction as boolean ?? false,
           fieldIssues: (parsed.fieldIssues as Array<{
             field: string;
             currentValue: unknown;
@@ -950,6 +966,7 @@ Please verify this transaction data against the email content and return your fi
           transactionId,
           sourceEmailId: emailId!,
           hasIssues: qaResult.hasIssues,
+          isMultiTransaction: qaResult.isMultiTransaction,
           fieldIssues: qaResult.fieldIssues,
           duplicateFields: qaResult.duplicateFields,
           overallAssessment: qaResult.overallAssessment || null,
@@ -963,6 +980,7 @@ Please verify this transaction data against the email content and return your fi
           transactionId,
           sourceEmailId: emailId!,
           hasIssues: false,
+          isMultiTransaction: false,
           fieldIssues: [],
           duplicateFields: [],
           overallAssessment: `Error: ${qaResult.error}`,

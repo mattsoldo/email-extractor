@@ -187,6 +187,9 @@ function ComparePageContent() {
   // Track which comparison we've auto-assigned exclusive winners for
   const autoAssignedForRef = useRef<string | null>(null);
 
+  // Track which comparison we've auto-assigned multi-transaction winners for
+  const autoAssignedMultiTxnRef = useRef<string | null>(null);
+
   // Filter state: "all" | "run_a" | "run_b" | "tie" | "exclude" | "discussion" | "pending"
   const [winnerFilter, setWinnerFilter] = useState<string>("all");
 
@@ -647,6 +650,128 @@ function ComparePageContent() {
       })
       .catch((err) => {
         console.error("Failed to auto-assign exclusive winners:", err);
+      });
+  }, [comparison, runAId, runBId]);
+
+  // Auto-assign winners for multi-transaction emails where all transactions match
+  useEffect(() => {
+    if (!comparison || !runAId || !runBId) return;
+
+    // Create a unique key for this comparison
+    const comparisonKey = `${runAId}-${runBId}-multi`;
+
+    // Skip if we've already auto-assigned for this comparison
+    if (autoAssignedMultiTxnRef.current === comparisonKey) return;
+
+    // Determine the overall winner run
+    // Need to calculate this here since winnerStats may not be stable yet
+    const needsDecision = comparison.comparisons.filter((c) => c.status !== "match");
+    let runAWins = 0;
+    let runBWins = 0;
+    for (const item of needsDecision) {
+      if (item.winnerTransactionId === item.runATransaction?.id) {
+        runAWins++;
+      } else if (item.winnerTransactionId === item.runBTransaction?.id) {
+        runBWins++;
+      }
+    }
+
+    // If there's no clear winner yet, skip auto-assignment
+    if (runAWins === 0 && runBWins === 0) {
+      return;
+    }
+
+    const winningRunIsA = runAWins >= runBWins;
+
+    // Find multi-transaction emails that:
+    // 1. Have matching transactions (withMatches)
+    // 2. Have the same count on both sides (all transactions pair up perfectly)
+    // 3. Don't already have winners assigned
+    const multiTxnToAutoAssign: Array<{ emailId: string; transactionIds: string[] }> = [];
+
+    if (comparison.multiTransactionEmails) {
+      for (const email of comparison.multiTransactionEmails) {
+        // Skip if already has winners
+        if (email.winnerTransactionIds.length > 0) continue;
+
+        // Must have same number of transactions on both sides
+        if (email.runATransactions.length !== email.runBTransactions.length) continue;
+        if (email.runATransactions.length === 0) continue;
+
+        // Check if all transactions can be paired (same type, amount, symbol)
+        const usedA = new Set<string>();
+        const usedB = new Set<string>();
+        let allMatched = true;
+
+        for (const txnA of email.runATransactions) {
+          let foundMatch = false;
+          for (const txnB of email.runBTransactions) {
+            if (usedB.has(txnB.id)) continue;
+            // Check if they match (type, amount, symbol)
+            if (txnA.type === txnB.type && txnA.amount === txnB.amount && txnA.symbol === txnB.symbol) {
+              usedA.add(txnA.id);
+              usedB.add(txnB.id);
+              foundMatch = true;
+              break;
+            }
+          }
+          if (!foundMatch) {
+            allMatched = false;
+            break;
+          }
+        }
+
+        // All transactions from A must have found a match in B
+        if (allMatched && usedA.size === email.runATransactions.length) {
+          // Auto-assign all transactions from the winning run
+          const winningTransactions = winningRunIsA ? email.runATransactions : email.runBTransactions;
+          multiTxnToAutoAssign.push({
+            emailId: email.emailId,
+            transactionIds: winningTransactions.map((t) => t.id),
+          });
+        }
+      }
+    }
+
+    if (multiTxnToAutoAssign.length === 0) {
+      // Mark as processed even if nothing to do
+      autoAssignedMultiTxnRef.current = comparisonKey;
+      return;
+    }
+
+    // Mark as processed before making the API call
+    autoAssignedMultiTxnRef.current = comparisonKey;
+
+    // Build updates - serialize multiple IDs as JSON array
+    const updates = multiTxnToAutoAssign.map((item) => ({
+      emailId: item.emailId,
+      winnerTransactionId:
+        item.transactionIds.length === 1
+          ? item.transactionIds[0]
+          : JSON.stringify(item.transactionIds),
+    }));
+
+    // Batch update
+    fetch("/api/compare", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates }),
+    })
+      .then((res) => {
+        if (res.ok) {
+          console.log(`Auto-assigned ${multiTxnToAutoAssign.length} multi-transaction emails to ${winningRunIsA ? "Run A" : "Run B"}`);
+          // Silently refresh to show updated winners
+          fetch(`/api/compare?runA=${runAId}&runB=${runBId}`)
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.comparisons) {
+                setComparison(data);
+              }
+            });
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to auto-assign multi-transaction winners:", err);
       });
   }, [comparison, runAId, runBId]);
 

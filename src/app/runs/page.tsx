@@ -43,6 +43,7 @@ import {
   Loader2,
   Plus,
   Database,
+  Download,
 } from "lucide-react";
 import {
   Dialog,
@@ -682,6 +683,18 @@ export default function RunsPage() {
                                   <ExternalLink className="h-4 w-4" />
                                 </Button>
                               </Link>
+                            )}
+                            {run.status === "completed" && run.transactionsCreated > 0 && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  window.location.href = `/api/transactions/export?runId=${run.id}&format=excel`;
+                                }}
+                                title="Export to CSV"
+                              >
+                                <Download className="h-4 w-4" />
+                              </Button>
                             )}
                             <Button
                               variant="ghost"

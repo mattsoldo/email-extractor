@@ -65,6 +65,7 @@ interface QaRun {
       minConfidence?: number;
       maxConfidence?: number;
     };
+    sampleSize?: number | null;
   } | null;
   synthesizedRunId: string | null;
   startedAt: string | null;
@@ -123,6 +124,7 @@ export default function QAPage() {
   const [selectedSourceRun, setSelectedSourceRun] = useState<string>("");
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [selectedPrompt, setSelectedPrompt] = useState<string>("");
+  const [sampleSize, setSampleSize] = useState<string>("");
   const [creating, setCreating] = useState(false);
 
   // Fetch QA runs
@@ -224,6 +226,7 @@ export default function QAPage() {
 
     setCreating(true);
     try {
+      const parsedSampleSize = sampleSize ? parseInt(sampleSize, 10) : null;
       const res = await fetch("/api/qa", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -231,13 +234,16 @@ export default function QAPage() {
           sourceRunId: selectedSourceRun,
           modelId: selectedModel,
           promptId: selectedPrompt,
+          sampleSize: parsedSampleSize && parsedSampleSize > 0 ? parsedSampleSize : null,
         }),
       });
 
       if (res.ok) {
-        toast.success("QA run started");
+        const sampleMsg = parsedSampleSize ? ` (sampling ${parsedSampleSize} transactions)` : "";
+        toast.success(`QA run started${sampleMsg}`);
         setNewRunDialogOpen(false);
         setSelectedSourceRun("");
+        setSampleSize("");
         fetchQaRuns(false);
       } else {
         const data = await res.json();
@@ -439,8 +445,13 @@ export default function QAPage() {
                           <TableCell>
                             <div className="w-32">
                               <Progress value={progress} className="h-2" />
-                              <div className="text-xs text-gray-500 mt-1">
+                              <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
                                 {run.transactionsChecked} / {run.transactionsTotal}
+                                {run.config?.sampleSize && (
+                                  <Badge variant="outline" className="text-xs px-1 py-0 h-4 bg-purple-50 text-purple-700 border-purple-300">
+                                    Sampled
+                                  </Badge>
+                                )}
                               </div>
                             </div>
                           </TableCell>
@@ -593,6 +604,21 @@ export default function QAPage() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Random Sample Size (optional)</Label>
+              <input
+                type="number"
+                min="1"
+                placeholder="Leave empty to QA all transactions"
+                value={sampleSize}
+                onChange={(e) => setSampleSize(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+              <p className="text-xs text-gray-500">
+                Randomly select a subset of transactions to QA for testing purposes
+              </p>
             </div>
           </div>
 

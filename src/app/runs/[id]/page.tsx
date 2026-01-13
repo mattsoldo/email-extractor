@@ -38,6 +38,7 @@ import {
   Sparkles,
   Plus,
   Database,
+  Download,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -387,20 +388,33 @@ export default function RunDetailPage() {
               </Link>
             )}
             {run.status === "completed" && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-2 border-purple-300 text-purple-700 hover:bg-purple-50"
-                onClick={handleFlattenPreview}
-                disabled={loadingPreview}
-              >
-                {loadingPreview ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Sparkles className="h-4 w-4" />
-                )}
-                Flatten Data
-              </Button>
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => {
+                    window.location.href = `/api/transactions/export?runId=${runId}&format=excel`;
+                  }}
+                >
+                  <Download className="h-4 w-4" />
+                  Export CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2 border-purple-300 text-purple-700 hover:bg-purple-50"
+                  onClick={handleFlattenPreview}
+                  disabled={loadingPreview}
+                >
+                  {loadingPreview ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" />
+                  )}
+                  Flatten Data
+                </Button>
+              </>
             )}
           </div>
         </div>

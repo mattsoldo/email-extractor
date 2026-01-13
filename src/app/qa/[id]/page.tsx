@@ -61,6 +61,7 @@ interface QaResult {
   transactionId: string;
   sourceEmailId: string;
   hasIssues: boolean;
+  isMultiTransaction: boolean;
   fieldIssues: FieldIssue[];
   duplicateFields: DuplicateField[];
   overallAssessment: string | null;
@@ -101,6 +102,7 @@ interface QaRun {
 interface Stats {
   total: number;
   withIssues: number;
+  multiTransaction: number;
   accepted: number;
   rejected: number;
   partial: number;
@@ -121,6 +123,7 @@ export default function QAReviewPage({
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [onlyIssues, setOnlyIssues] = useState(true);
+  const [onlyMultiTransaction, setOnlyMultiTransaction] = useState(false);
 
   // Expanded states
   const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
@@ -149,6 +152,7 @@ export default function QAReviewPage({
         page: String(page),
         limit: "50",
         onlyIssues: String(onlyIssues),
+        onlyMultiTransaction: String(onlyMultiTransaction),
       });
 
       const res = await fetch(`/api/qa/${id}?${params}`);
@@ -183,7 +187,7 @@ export default function QAReviewPage({
     } finally {
       setLoading(false);
     }
-  }, [id, page, onlyIssues]);
+  }, [id, page, onlyIssues, onlyMultiTransaction]);
 
   useEffect(() => {
     fetchResults();
@@ -568,8 +572,8 @@ export default function QAReviewPage({
             </Card>
           </div>
 
-          {/* Filter Toggle */}
-          <div className="flex items-center gap-4 mb-4">
+          {/* Filter Toggles */}
+          <div className="flex items-center gap-6 mb-4">
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
                 checked={onlyIssues}
@@ -579,6 +583,16 @@ export default function QAReviewPage({
                 }}
               />
               Show only transactions with issues
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={onlyMultiTransaction}
+                onCheckedChange={(checked) => {
+                  setOnlyMultiTransaction(!!checked);
+                  setPage(1);
+                }}
+              />
+              Show only multi-transaction emails ({stats?.multiTransaction || 0})
             </label>
           </div>
 
@@ -630,6 +644,11 @@ export default function QAReviewPage({
                               </div>
                             </div>
                             <div className="flex items-center gap-4">
+                              {result.isMultiTransaction && (
+                                <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-300">
+                                  Multi-Txn
+                                </Badge>
+                              )}
                               <div className="text-right text-sm">
                                 <div className="text-gray-600">
                                   {result.fieldIssues.length} field issues

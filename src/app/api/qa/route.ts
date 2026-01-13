@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { sourceRunId, modelId, promptId, filters } = body;
+    const { sourceRunId, modelId, promptId, filters, sampleSize } = body;
 
     if (!sourceRunId) {
       return NextResponse.json(
@@ -105,6 +105,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate sampleSize if provided
+    const validatedSampleSize = sampleSize && sampleSize > 0 ? Math.floor(sampleSize) : null;
+
     // Create the QA run record
     const qaRunId = uuid();
     await db.insert(qaRuns).values({
@@ -114,7 +117,7 @@ export async function POST(request: NextRequest) {
       modelId,
       promptId,
       status: "pending",
-      config: filters ? { filters } : null,
+      config: filters || validatedSampleSize ? { filters, sampleSize: validatedSampleSize } : null,
     });
 
     // Send event to Inngest to start QA processing
@@ -126,6 +129,7 @@ export async function POST(request: NextRequest) {
         modelId,
         promptId,
         filters,
+        sampleSize: validatedSampleSize,
       },
     });
 

@@ -411,6 +411,7 @@ export const qaRuns = pgTable("qa_runs", {
       minConfidence?: number;
       maxConfidence?: number;
     };
+    sampleSize?: number | null;
   }>(),
 
   // Output
@@ -431,6 +432,7 @@ export const qaResults = pgTable("qa_results", {
 
   // QA findings
   hasIssues: boolean("has_issues").default(false),
+  isMultiTransaction: boolean("is_multi_transaction").default(false),
 
   // Field issues (accuracy problems)
   fieldIssues: jsonb("field_issues").$type<Array<{

@@ -20,6 +20,7 @@ export async function GET(
   const { id } = await params;
   const searchParams = request.nextUrl.searchParams;
   const onlyIssues = searchParams.get("onlyIssues") === "true";
+  const onlyMultiTransaction = searchParams.get("onlyMultiTransaction") === "true";
   const page = parseInt(searchParams.get("page") || "1");
   const limit = parseInt(searchParams.get("limit") || "50");
   const offset = (page - 1) * limit;
@@ -49,8 +50,22 @@ export async function GET(
     .where(eq(emailSets.id, qaRun.setId))
     .limit(1);
 
+  // Build filter conditions
+  const buildWhereCondition = () => {
+    const conditions = [eq(qaResults.qaRunId, id)];
+    if (onlyIssues) {
+      conditions.push(eq(qaResults.hasIssues, true));
+    }
+    if (onlyMultiTransaction) {
+      conditions.push(eq(qaResults.isMultiTransaction, true));
+    }
+    return conditions.length === 1 ? conditions[0] : and(...conditions);
+  };
+
+  const whereCondition = buildWhereCondition();
+
   // Get results with optional filtering
-  let resultsQuery = db
+  const results = await db
     .select({
       result: qaResults,
       transaction: transactions,
@@ -64,31 +79,22 @@ export async function GET(
     .from(qaResults)
     .leftJoin(transactions, eq(qaResults.transactionId, transactions.id))
     .leftJoin(emails, eq(qaResults.sourceEmailId, emails.id))
-    .where(
-      onlyIssues
-        ? and(eq(qaResults.qaRunId, id), eq(qaResults.hasIssues, true))
-        : eq(qaResults.qaRunId, id)
-    )
+    .where(whereCondition)
     .limit(limit)
     .offset(offset);
-
-  const results = await resultsQuery;
 
   // Get total count based on filter
   const [{ count: totalResults }] = await db
     .select({ count: sql<number>`count(*)` })
     .from(qaResults)
-    .where(
-      onlyIssues
-        ? and(eq(qaResults.qaRunId, id), eq(qaResults.hasIssues, true))
-        : eq(qaResults.qaRunId, id)
-    );
+    .where(whereCondition);
 
   // Get summary stats
   const [stats] = await db
     .select({
       total: sql<number>`count(*)`,
       withIssues: sql<number>`count(*) filter (where ${qaResults.hasIssues} = true)`,
+      multiTransaction: sql<number>`count(*) filter (where ${qaResults.isMultiTransaction} = true)`,
       accepted: sql<number>`count(*) filter (where ${qaResults.status} = 'accepted')`,
       rejected: sql<number>`count(*) filter (where ${qaResults.status} = 'rejected')`,
       partial: sql<number>`count(*) filter (where ${qaResults.status} = 'partial')`,

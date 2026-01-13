@@ -33,6 +33,7 @@ export async function POST(request: NextRequest) {
         name,
         description,
         preview: preview === true,
+        selectedKeys: body.selectedKeys,
       });
     }
 
@@ -316,6 +317,7 @@ interface DataFlattenParams {
   name?: string;
   description?: string;
   preview?: boolean;
+  selectedKeys?: string[];
 }
 
 // Convert camelCase or any string to snake_case for PostgreSQL column names
@@ -330,7 +332,7 @@ function toSnakeCase(str: string): string {
 }
 
 async function handleDataFlatten(params: DataFlattenParams) {
-  const { sourceRunId, name, description, preview = false } = params;
+  const { sourceRunId, name, description, preview = false, selectedKeys } = params;
 
   if (!sourceRunId) {
     return NextResponse.json(
@@ -394,6 +396,18 @@ async function handleDataFlatten(params: DataFlattenParams) {
     );
   }
 
+  // Filter to only selected keys if specified (non-preview mode)
+  let keysToFlatten = allKeys;
+  if (selectedKeys && selectedKeys.length > 0 && !preview) {
+    keysToFlatten = new Set(selectedKeys.filter((k) => allKeys.has(k)));
+    if (keysToFlatten.size === 0) {
+      return NextResponse.json(
+        { error: "None of the selected keys were found in the data" },
+        { status: 400 }
+      );
+    }
+  }
+
   // Step 2: Get existing columns in transactions table
   const existingColumnsResult = await queryClient<{ column_name: string }[]>`
     SELECT column_name FROM information_schema.columns WHERE table_name = 'transactions'
@@ -401,10 +415,12 @@ async function handleDataFlatten(params: DataFlattenParams) {
   const existingColumns = new Set(existingColumnsResult.map((r) => r.column_name));
 
   // Step 3: Determine which columns need to be created
+  // For preview, use all keys. For actual flatten, use filtered keys.
+  const keysForMapping = preview ? allKeys : keysToFlatten;
   const keyToColumn = new Map<string, string>();
   const columnsToCreate: string[] = [];
 
-  for (const key of allKeys) {
+  for (const key of keysForMapping) {
     const columnName = toSnakeCase(key);
     keyToColumn.set(key, columnName);
 
@@ -428,6 +444,26 @@ async function handleDataFlatten(params: DataFlattenParams) {
       }
     }
 
+    // Build column arrays and sort by occurrences descending
+    const newColumnsArray = columnsToCreate.map((col) => {
+      const originalKey = Array.from(keyToColumn.entries())
+        .find(([, v]) => v === col)?.[0] || col;
+      return {
+        columnName: col,
+        originalKey,
+        occurrences: keyOccurrences[originalKey] || 0,
+      };
+    }).sort((a, b) => b.occurrences - a.occurrences);
+
+    const existingColumnsArray = Array.from(allKeys)
+      .filter((key) => existingColumns.has(toSnakeCase(key)))
+      .map((key) => ({
+        columnName: toSnakeCase(key),
+        originalKey: key,
+        occurrences: keyOccurrences[key] || 0,
+      }))
+      .sort((a, b) => b.occurrences - a.occurrences);
+
     return NextResponse.json({
       preview: true,
       sourceRun: {
@@ -437,23 +473,8 @@ async function handleDataFlatten(params: DataFlattenParams) {
         transactionCount: sourceTransactions.length,
       },
       changes: {
-        newColumns: columnsToCreate.map((col) => {
-          // Find the original key for this column
-          const originalKey = Array.from(keyToColumn.entries())
-            .find(([, v]) => v === col)?.[0] || col;
-          return {
-            columnName: col,
-            originalKey,
-            occurrences: keyOccurrences[originalKey] || 0,
-          };
-        }),
-        existingColumns: Array.from(allKeys)
-          .filter((key) => existingColumns.has(toSnakeCase(key)))
-          .map((key) => ({
-            columnName: toSnakeCase(key),
-            originalKey: key,
-            occurrences: keyOccurrences[key] || 0,
-          })),
+        newColumns: newColumnsArray,
+        existingColumns: existingColumnsArray,
         totalKeys: allKeys.size,
         totalTransactions: sourceTransactions.length,
       },
@@ -483,7 +504,7 @@ async function handleDataFlatten(params: DataFlattenParams) {
     setId: sourceRun.setId,
     version: nextVersion,
     name: synthesizedRunName,
-    description: description || `Data flattened from run v${sourceRun.version}. Created ${columnsToCreate.length} new columns: ${columnsToCreate.join(", ")}`,
+    description: description || `Data flattened from run v${sourceRun.version}. Flattened ${keysToFlatten.size} keys${columnsToCreate.length > 0 ? `, created ${columnsToCreate.length} new columns: ${columnsToCreate.join(", ")}` : ""}`,
     modelId: sourceRun.modelId,
     promptId: sourceRun.promptId,
     softwareVersion: sourceRun.softwareVersion,
@@ -492,7 +513,7 @@ async function handleDataFlatten(params: DataFlattenParams) {
     informationalCount: 0,
     errorCount: 0,
     config: {
-      flattenedKeys: Array.from(allKeys),
+      flattenedKeys: Array.from(keysToFlatten),
       columnsCreated: columnsToCreate,
       keyToColumnMapping: Object.fromEntries(keyToColumn),
     },
@@ -580,7 +601,7 @@ async function handleDataFlatten(params: DataFlattenParams) {
       ];
 
       // Add dynamic column values
-      for (const key of allKeys) {
+      for (const key of keysToFlatten) {
         const value = flatData[key];
         baseValues.push(value !== undefined ? String(value) : null);
       }
@@ -617,7 +638,7 @@ async function handleDataFlatten(params: DataFlattenParams) {
       version: nextVersion,
       transactionsCreated: sourceTransactions.length,
       columnsCreated: columnsToCreate,
-      totalFlattenedKeys: allKeys.size,
+      totalFlattenedKeys: keysToFlatten.size,
     },
   });
 }

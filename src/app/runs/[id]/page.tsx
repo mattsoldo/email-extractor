@@ -101,6 +101,7 @@ export default function RunDetailPage() {
     totalTransactions: number;
   } | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+  const [selectedFields, setSelectedFields] = useState<Set<string>>(new Set());
 
   const handleCancel = async () => {
     if (!run || cancelling) return;
@@ -144,6 +145,12 @@ export default function RunDetailPage() {
 
       const data = await res.json();
       setFlattenPreview(data.changes);
+      // Select all fields by default
+      const allKeys = [
+        ...data.changes.newColumns.map((c: { originalKey: string }) => c.originalKey),
+        ...data.changes.existingColumns.map((c: { originalKey: string }) => c.originalKey),
+      ];
+      setSelectedFields(new Set(allKeys));
       setFlattenDialogOpen(true);
     } catch (error) {
       console.error("Failed to get flatten preview:", error);
@@ -153,8 +160,33 @@ export default function RunDetailPage() {
     }
   };
 
+  const toggleFieldSelection = (key: string) => {
+    setSelectedFields((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const selectAllFields = () => {
+    if (!flattenPreview) return;
+    const allKeys = [
+      ...flattenPreview.newColumns.map((c) => c.originalKey),
+      ...flattenPreview.existingColumns.map((c) => c.originalKey),
+    ];
+    setSelectedFields(new Set(allKeys));
+  };
+
+  const deselectAllFields = () => {
+    setSelectedFields(new Set());
+  };
+
   const handleFlattenConfirm = async () => {
-    if (!run || flattening) return;
+    if (!run || flattening || selectedFields.size === 0) return;
 
     setFlattening(true);
     try {
@@ -164,6 +196,7 @@ export default function RunDetailPage() {
         body: JSON.stringify({
           type: "data_flatten",
           runAId: runId,
+          selectedKeys: Array.from(selectedFields),
         }),
       });
 
@@ -629,26 +662,61 @@ export default function RunDetailPage() {
 
             {flattenPreview && (
               <div className="space-y-4 py-4">
-                <div className="text-sm text-gray-600">
-                  Processing <span className="font-semibold">{flattenPreview.totalTransactions}</span> transactions
-                  with <span className="font-semibold">{flattenPreview.totalKeys}</span> unique data keys.
+                <div className="flex items-center justify-between">
+                  <div className="text-sm text-gray-600">
+                    Processing <span className="font-semibold">{flattenPreview.totalTransactions}</span> transactions
+                    with <span className="font-semibold">{flattenPreview.totalKeys}</span> unique data keys.
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={selectAllFields}
+                      className="text-xs h-7"
+                    >
+                      Select All
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={deselectAllFields}
+                      className="text-xs h-7"
+                    >
+                      Deselect All
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="text-xs text-gray-500">
+                  {selectedFields.size} of {flattenPreview.totalKeys} fields selected
                 </div>
 
                 {flattenPreview.newColumns.length > 0 && (
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-sm font-medium text-green-700">
                       <Plus className="h-4 w-4" />
-                      New Columns to Create ({flattenPreview.newColumns.length})
+                      New Columns to Create ({flattenPreview.newColumns.filter(c => selectedFields.has(c.originalKey)).length}/{flattenPreview.newColumns.length})
                     </div>
                     <div className="bg-green-50 border border-green-200 rounded-lg p-3 max-h-48 overflow-y-auto">
                       <div className="space-y-1">
                         {flattenPreview.newColumns.map((col) => (
-                          <div key={col.columnName} className="flex justify-between text-sm">
-                            <code className="text-green-800">{col.columnName}</code>
+                          <label
+                            key={col.columnName}
+                            className="flex items-center justify-between text-sm cursor-pointer hover:bg-green-100 rounded px-1 py-0.5"
+                          >
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedFields.has(col.originalKey)}
+                                onChange={() => toggleFieldSelection(col.originalKey)}
+                                className="rounded border-green-400 text-green-600 focus:ring-green-500"
+                              />
+                              <code className="text-green-800">{col.columnName}</code>
+                            </div>
                             <span className="text-gray-500">
                               {col.occurrences} transactions
                             </span>
-                          </div>
+                          </label>
                         ))}
                       </div>
                     </div>
@@ -659,17 +727,28 @@ export default function RunDetailPage() {
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-sm font-medium text-blue-700">
                       <Database className="h-4 w-4" />
-                      Existing Columns ({flattenPreview.existingColumns.length})
+                      Existing Columns ({flattenPreview.existingColumns.filter(c => selectedFields.has(c.originalKey)).length}/{flattenPreview.existingColumns.length})
                     </div>
                     <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 max-h-32 overflow-y-auto">
                       <div className="space-y-1">
                         {flattenPreview.existingColumns.map((col) => (
-                          <div key={col.columnName} className="flex justify-between text-sm">
-                            <code className="text-blue-800">{col.columnName}</code>
+                          <label
+                            key={col.columnName}
+                            className="flex items-center justify-between text-sm cursor-pointer hover:bg-blue-100 rounded px-1 py-0.5"
+                          >
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedFields.has(col.originalKey)}
+                                onChange={() => toggleFieldSelection(col.originalKey)}
+                                className="rounded border-blue-400 text-blue-600 focus:ring-blue-500"
+                              />
+                              <code className="text-blue-800">{col.columnName}</code>
+                            </div>
                             <span className="text-gray-500">
                               {col.occurrences} transactions
                             </span>
-                          </div>
+                          </label>
                         ))}
                       </div>
                     </div>
@@ -694,7 +773,7 @@ export default function RunDetailPage() {
               </Button>
               <Button
                 onClick={handleFlattenConfirm}
-                disabled={flattening || !flattenPreview || (flattenPreview.newColumns.length === 0 && flattenPreview.existingColumns.length === 0)}
+                disabled={flattening || !flattenPreview || selectedFields.size === 0}
                 className="gap-2 bg-purple-600 hover:bg-purple-700"
               >
                 {flattening ? (
@@ -705,7 +784,7 @@ export default function RunDetailPage() {
                 ) : (
                   <>
                     <Sparkles className="h-4 w-4" />
-                    Create Flattened Run
+                    Flatten {selectedFields.size} Field{selectedFields.size !== 1 ? "s" : ""}
                   </>
                 )}
               </Button>

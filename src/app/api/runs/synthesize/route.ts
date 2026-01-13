@@ -158,83 +158,123 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
   let transactionsTied = 0;
   let transactionsNoWinner = 0;
 
+  // Helper to check if a value is "empty" (null, undefined, or empty string)
+  const isEmpty = (val: unknown): boolean => {
+    return val === null || val === undefined || val === "";
+  };
+
+  // Helper to merge data objects (winner takes precedence, loser fills gaps)
+  const mergeData = (
+    winnerData: Record<string, unknown> | null,
+    loserData: Record<string, unknown> | null
+  ): Record<string, unknown> => {
+    if (!winnerData && !loserData) return {};
+    if (!loserData) return winnerData || {};
+    if (!winnerData) return loserData || {};
+
+    const merged = { ...winnerData };
+    for (const [key, value] of Object.entries(loserData)) {
+      if (isEmpty(merged[key]) && !isEmpty(value)) {
+        merged[key] = value;
+      }
+    }
+    return merged;
+  };
+
   for (const emailId of allEmailIds) {
     const tA = byEmailA.get(emailId);
     const tB = byEmailB.get(emailId);
     const winner = emailWinners.get(emailId);
 
-    let sourceTransaction: typeof transactions.$inferSelect | null = null;
+    let winnerTransaction: typeof transactions.$inferSelect | null = null;
+    let loserTransaction: typeof transactions.$inferSelect | null = null;
     let reason = "";
 
     if (winner === "tie") {
-      // Use primary run for ties
-      sourceTransaction = primaryRunId === runAId ? tA || null : tB || null;
+      // Use primary run for ties, secondary as loser for field merging
+      winnerTransaction = primaryRunId === runAId ? tA || null : tB || null;
+      loserTransaction = primaryRunId === runAId ? tB || null : tA || null;
       reason = "tie";
       transactionsTied++;
     } else if (winner && tA && winner === tA.id) {
       // Run A was designated winner
-      sourceTransaction = tA;
+      winnerTransaction = tA;
+      loserTransaction = tB || null;
       reason = "winner_a";
       transactionsFromA++;
     } else if (winner && tB && winner === tB.id) {
       // Run B was designated winner
-      sourceTransaction = tB;
+      winnerTransaction = tB;
+      loserTransaction = tA || null;
       reason = "winner_b";
       transactionsFromB++;
     } else {
       // No winner designated - use primary run
-      sourceTransaction = primaryRunId === runAId ? tA || null : tB || null;
+      winnerTransaction = primaryRunId === runAId ? tA || null : tB || null;
+      loserTransaction = primaryRunId === runAId ? tB || null : tA || null;
       reason = "no_winner";
       transactionsNoWinner++;
     }
 
-    if (sourceTransaction) {
-      // Create a copy of the transaction for the synthesized run
+    if (winnerTransaction) {
+      // Create a merged transaction: winner fields take precedence, loser fills gaps
       const newTransactionId = randomUUID();
+
+      // For each field: use winner's value if present, otherwise use loser's
+      const w = winnerTransaction;
+      const l = loserTransaction;
+
       transactionsToCreate.push({
         id: newTransactionId,
-        type: sourceTransaction.type,
-        accountId: sourceTransaction.accountId,
-        toAccountId: sourceTransaction.toAccountId,
-        date: sourceTransaction.date,
-        amount: sourceTransaction.amount,
-        currency: sourceTransaction.currency,
-        description: sourceTransaction.description,
-        symbol: sourceTransaction.symbol,
-        category: sourceTransaction.category,
-        quantity: sourceTransaction.quantity,
-        quantityExecuted: sourceTransaction.quantityExecuted,
-        quantityRemaining: sourceTransaction.quantityRemaining,
-        price: sourceTransaction.price,
-        executionPrice: sourceTransaction.executionPrice,
-        priceType: sourceTransaction.priceType,
-        limitPrice: sourceTransaction.limitPrice,
-        fees: sourceTransaction.fees,
-        contractSize: sourceTransaction.contractSize,
-        optionType: sourceTransaction.optionType,
-        strikePrice: sourceTransaction.strikePrice,
-        expirationDate: sourceTransaction.expirationDate,
-        optionAction: sourceTransaction.optionAction,
-        securityName: sourceTransaction.securityName,
-        grantNumber: sourceTransaction.grantNumber,
-        vestDate: sourceTransaction.vestDate,
-        orderId: sourceTransaction.orderId,
-        orderType: sourceTransaction.orderType,
-        orderQuantity: sourceTransaction.orderQuantity,
-        orderPrice: sourceTransaction.orderPrice,
-        orderStatus: sourceTransaction.orderStatus,
-        timeInForce: sourceTransaction.timeInForce,
-        referenceNumber: sourceTransaction.referenceNumber,
-        partiallyExecuted: sourceTransaction.partiallyExecuted,
-        executionTime: sourceTransaction.executionTime,
-        data: sourceTransaction.data,
-        unclassifiedData: sourceTransaction.unclassifiedData,
-        sourceEmailId: sourceTransaction.sourceEmailId,
+        type: w.type, // Type always from winner
+        accountId: !isEmpty(w.accountId) ? w.accountId : l?.accountId || null,
+        toAccountId: !isEmpty(w.toAccountId) ? w.toAccountId : l?.toAccountId || null,
+        date: w.date, // Date always from winner
+        amount: !isEmpty(w.amount) ? w.amount : l?.amount || null,
+        currency: !isEmpty(w.currency) ? w.currency : l?.currency || null,
+        description: !isEmpty(w.description) ? w.description : l?.description || null,
+        symbol: !isEmpty(w.symbol) ? w.symbol : l?.symbol || null,
+        category: !isEmpty(w.category) ? w.category : l?.category || null,
+        quantity: !isEmpty(w.quantity) ? w.quantity : l?.quantity || null,
+        quantityExecuted: !isEmpty(w.quantityExecuted) ? w.quantityExecuted : l?.quantityExecuted || null,
+        quantityRemaining: !isEmpty(w.quantityRemaining) ? w.quantityRemaining : l?.quantityRemaining || null,
+        price: !isEmpty(w.price) ? w.price : l?.price || null,
+        executionPrice: !isEmpty(w.executionPrice) ? w.executionPrice : l?.executionPrice || null,
+        priceType: !isEmpty(w.priceType) ? w.priceType : l?.priceType || null,
+        limitPrice: !isEmpty(w.limitPrice) ? w.limitPrice : l?.limitPrice || null,
+        fees: !isEmpty(w.fees) ? w.fees : l?.fees || null,
+        contractSize: !isEmpty(w.contractSize) ? w.contractSize : l?.contractSize || null,
+        optionType: !isEmpty(w.optionType) ? w.optionType : l?.optionType || null,
+        strikePrice: !isEmpty(w.strikePrice) ? w.strikePrice : l?.strikePrice || null,
+        expirationDate: !isEmpty(w.expirationDate) ? w.expirationDate : l?.expirationDate || null,
+        optionAction: !isEmpty(w.optionAction) ? w.optionAction : l?.optionAction || null,
+        securityName: !isEmpty(w.securityName) ? w.securityName : l?.securityName || null,
+        grantNumber: !isEmpty(w.grantNumber) ? w.grantNumber : l?.grantNumber || null,
+        vestDate: !isEmpty(w.vestDate) ? w.vestDate : l?.vestDate || null,
+        orderId: !isEmpty(w.orderId) ? w.orderId : l?.orderId || null,
+        orderType: !isEmpty(w.orderType) ? w.orderType : l?.orderType || null,
+        orderQuantity: !isEmpty(w.orderQuantity) ? w.orderQuantity : l?.orderQuantity || null,
+        orderPrice: !isEmpty(w.orderPrice) ? w.orderPrice : l?.orderPrice || null,
+        orderStatus: !isEmpty(w.orderStatus) ? w.orderStatus : l?.orderStatus || null,
+        timeInForce: !isEmpty(w.timeInForce) ? w.timeInForce : l?.timeInForce || null,
+        referenceNumber: !isEmpty(w.referenceNumber) ? w.referenceNumber : l?.referenceNumber || null,
+        partiallyExecuted: w.partiallyExecuted !== null ? w.partiallyExecuted : l?.partiallyExecuted || null,
+        executionTime: !isEmpty(w.executionTime) ? w.executionTime : l?.executionTime || null,
+        // Merge data objects: winner's keys take precedence, loser's unique keys are added
+        data: mergeData(
+          w.data as Record<string, unknown> | null,
+          l?.data as Record<string, unknown> | null
+        ),
+        unclassifiedData: mergeData(
+          w.unclassifiedData as Record<string, unknown> | null,
+          l?.unclassifiedData as Record<string, unknown> | null
+        ),
+        sourceEmailId: w.sourceEmailId,
         extractionRunId: synthesizedRunId,
         runCompleted: true,
-        confidence: sourceTransaction.confidence,
-        llmModel: sourceTransaction.llmModel,
-        sourceTransactionId: sourceTransaction.id, // Track provenance
+        confidence: w.confidence, // Confidence from winner
+        llmModel: w.llmModel, // Model from winner
+        sourceTransactionId: w.id, // Track provenance (winner's ID)
       });
     }
   }

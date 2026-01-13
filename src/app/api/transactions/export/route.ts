@@ -44,16 +44,18 @@ export async function GET(request: NextRequest) {
     // Create alias for toAccount join
     const toAccounts = alias(accounts, "to_accounts");
 
-    // Fetch all transactions with both account and toAccount info
+    // Fetch all transactions with account, toAccount, and email info
     const results = await db
       .select({
         transaction: transactions,
         account: accounts,
         toAccount: toAccounts,
+        email: emails,
       })
       .from(transactions)
       .leftJoin(accounts, eq(transactions.accountId, accounts.id))
       .leftJoin(toAccounts, eq(transactions.toAccountId, toAccounts.id))
+      .leftJoin(emails, eq(transactions.sourceEmailId, emails.id))
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(transactions.date));
 
@@ -81,6 +83,9 @@ export async function GET(request: NextRequest) {
       description: r.transaction.description || "",
       referenceNumber: r.transaction.referenceNumber || "",
       confidence: r.transaction.confidence || "",
+      // Email details
+      "Email Sender": r.email?.sender || "",
+      "Email Subject": r.email?.subject || "",
       // Links
       "Transaction Link": `${baseUrl}/transactions/${r.transaction.id}`,
       "Email Link": r.transaction.sourceEmailId
@@ -132,6 +137,8 @@ function createCsvResponse(
     "description",
     "referenceNumber",
     "confidence",
+    "Email Sender",
+    "Email Subject",
     "Transaction Link",
     "Email Link",
   ];

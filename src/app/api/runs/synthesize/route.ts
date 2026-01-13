@@ -159,6 +159,7 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
   let transactionsFromB = 0;
   let transactionsTied = 0;
   let transactionsNoWinner = 0;
+  let transactionsExcluded = 0;
 
   // Helper to check if a value is "empty" (null, undefined, or empty string)
   const isEmpty = (val: unknown): boolean => {
@@ -213,6 +214,12 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
     const tB = byEmailB.get(emailId);
     const winner = emailWinners.get(emailId);
     const overrides = emailOverrides.get(emailId);
+
+    // Skip excluded transactions - neither version should be included
+    if (winner === "exclude") {
+      transactionsExcluded++;
+      continue;
+    }
 
     let winnerTransaction: typeof transactions.$inferSelect | null = null;
     let loserTransaction: typeof transactions.$inferSelect | null = null;
@@ -334,6 +341,7 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
         fromB: transactionsFromB,
         ties: transactionsTied,
         noWinner: transactionsNoWinner,
+        excluded: transactionsExcluded,
       },
     },
     stats: {
@@ -387,6 +395,7 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
         fromRunB: transactionsFromB,
         ties: transactionsTied,
         noWinner: transactionsNoWinner,
+        excluded: transactionsExcluded,
       },
     },
   });

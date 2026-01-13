@@ -49,6 +49,7 @@ import {
   Pencil,
   Check,
   X,
+  Ban,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
@@ -116,6 +117,7 @@ interface ComparisonSummary {
   onlyA: number;
   onlyB: number;
   winnersDesignated: number;
+  excluded: number;
   agreementRate: number;
 }
 
@@ -411,7 +413,7 @@ function ComparePageContent() {
 
   const bulkDesignateWinner = async (
     items: TransactionComparison[],
-    winnerType: "a" | "b" | "tie"
+    winnerType: "a" | "b" | "tie" | "exclude"
   ) => {
     const typeKey = items[0]?.runATransaction?.type || items[0]?.runBTransaction?.type || "unknown";
     setBulkLoading((prev) => new Set(prev).add(typeKey));
@@ -422,9 +424,11 @@ function ComparePageContent() {
         winnerTransactionId:
           winnerType === "tie"
             ? "tie"
-            : winnerType === "a"
-              ? item.runATransaction?.id || null
-              : item.runBTransaction?.id || null,
+            : winnerType === "exclude"
+              ? "exclude"
+              : winnerType === "a"
+                ? item.runATransaction?.id || null
+                : item.runBTransaction?.id || null,
       }));
 
       const res = await fetch("/api/compare", {
@@ -645,6 +649,15 @@ function ComparePageContent() {
   const getWinnerBadge = (item: TransactionComparison) => {
     if (!item.winnerTransactionId) return null;
 
+    if (item.winnerTransactionId === "exclude") {
+      return (
+        <Badge variant="secondary" className="bg-red-100 text-red-800 gap-1">
+          <Ban className="h-3 w-3" />
+          Excluded
+        </Badge>
+      );
+    }
+
     if (item.winnerTransactionId === "tie") {
       return (
         <Badge variant="secondary" className="bg-gray-100 text-gray-800 gap-1">
@@ -826,9 +839,11 @@ function ComparePageContent() {
       key={item.emailId}
       className={
         item.winnerTransactionId
-          ? item.winnerTransactionId === "tie"
-            ? "border-gray-300 bg-gray-50/50"
-            : "border-green-300 bg-green-50/50"
+          ? item.winnerTransactionId === "exclude"
+            ? "border-red-300 bg-red-50/30 opacity-60"
+            : item.winnerTransactionId === "tie"
+              ? "border-gray-300 bg-gray-50/50"
+              : "border-green-300 bg-green-50/50"
           : ""
       }
     >
@@ -1259,6 +1274,19 @@ function ComparePageContent() {
                   <Equal className="h-3 w-3" />
                   Tie
                 </Button>
+                <Button
+                  size="sm"
+                  variant={item.winnerTransactionId === "exclude" ? "default" : "outline"}
+                  className={`gap-1 ${
+                    item.winnerTransactionId === "exclude"
+                      ? "bg-red-600 hover:bg-red-700"
+                      : "border-red-300 text-red-700 hover:bg-red-50"
+                  }`}
+                  onClick={() => designateWinner(item.emailId, "exclude")}
+                >
+                  <Ban className="h-3 w-3" />
+                  Do Not Use
+                </Button>
                 {item.winnerTransactionId && (
                   <Button
                     size="sm"
@@ -1526,6 +1554,22 @@ function ComparePageContent() {
                                       </>
                                     )}
                                   </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs border-red-300 text-red-700 hover:bg-red-50"
+                                    onClick={() => bulkDesignateWinner(items, "exclude")}
+                                    disabled={bulkLoading.has(typeKey)}
+                                  >
+                                    {bulkLoading.has(typeKey) ? (
+                                      <Loader2 className="h-3 w-3 animate-spin" />
+                                    ) : (
+                                      <>
+                                        <Ban className="h-3 w-3 mr-1" />
+                                        Exclude
+                                      </>
+                                    )}
+                                  </Button>
                                 </div>
                               </div>
                             </CardHeader>
@@ -1708,6 +1752,16 @@ function ComparePageContent() {
                                               >
                                                 Tie
                                               </Button>
+                                              <Button
+                                                size="sm"
+                                                variant="outline"
+                                                className="h-6 text-xs px-2 border-red-300 text-red-700 hover:bg-red-50"
+                                                onClick={() => bulkDesignateWinner(group.items, "exclude")}
+                                                disabled={bulkLoading.has(groupKey)}
+                                              >
+                                                <Ban className="h-3 w-3 mr-1" />
+                                                Exclude
+                                              </Button>
                                             </div>
                                           </div>
                                         </CollapsibleTrigger>
@@ -1854,11 +1908,16 @@ function ComparePageContent() {
                   <p className="font-medium text-gray-700">Summary:</p>
                   <p className="text-gray-600">
                     {comparison.summary.winnersDesignated} winners designated,{" "}
-                    {comparison.summary.different + comparison.summary.onlyA + comparison.summary.onlyB - comparison.summary.winnersDesignated} using fallback
+                    {comparison.summary.different + comparison.summary.onlyA + comparison.summary.onlyB - comparison.summary.winnersDesignated - comparison.summary.excluded} using fallback
                   </p>
                   <p className="text-gray-600">
                     {comparison.summary.matches} matching transactions will be included
                   </p>
+                  {comparison.summary.excluded > 0 && (
+                    <p className="text-red-600">
+                      {comparison.summary.excluded} transactions will be excluded (not copied)
+                    </p>
+                  )}
                 </div>
               )}
             </div>

@@ -257,7 +257,8 @@ export async function GET(request: NextRequest) {
 
     // Calculate summary stats
     const disputedCount = comparisons.filter((c) => c.status !== "match").length;
-    const winnersCount = comparisons.filter((c) => c.winnerTransactionId !== null).length;
+    const winnersCount = comparisons.filter((c) => c.winnerTransactionId !== null && c.winnerTransactionId !== "exclude").length;
+    const excludedCount = comparisons.filter((c) => c.winnerTransactionId === "exclude").length;
 
     const summary = {
       total: comparisons.length,
@@ -266,6 +267,7 @@ export async function GET(request: NextRequest) {
       onlyA: comparisons.filter((c) => c.status === "only_a").length,
       onlyB: comparisons.filter((c) => c.status === "only_b").length,
       winnersDesignated: winnersCount,
+      excluded: excludedCount,
       agreementRate: 0,
     };
     summary.agreementRate =
@@ -315,8 +317,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate transaction if provided (skip validation for special "tie" value)
-    if (winnerTransactionId && winnerTransactionId !== "tie") {
+    // Validate transaction if provided (skip validation for special values "tie" and "exclude")
+    if (winnerTransactionId && winnerTransactionId !== "tie" && winnerTransactionId !== "exclude") {
       const txn = await db
         .select()
         .from(transactions)
@@ -348,7 +350,9 @@ export async function POST(request: NextRequest) {
       ? "Winner cleared"
       : winnerTransactionId === "tie"
         ? "Marked as tie"
-        : "Winner set";
+        : winnerTransactionId === "exclude"
+          ? "Marked as excluded"
+          : "Winner set";
 
     return NextResponse.json({
       message,

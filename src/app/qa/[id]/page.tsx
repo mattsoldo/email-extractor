@@ -109,6 +109,12 @@ interface Stats {
   pending: number;
 }
 
+interface GroupedField {
+  field: string;
+  count: number;
+  resultCount: number;
+}
+
 export default function QAReviewPage({
   params,
 }: {
@@ -119,11 +125,14 @@ export default function QAReviewPage({
   const [qaRun, setQaRun] = useState<QaRun | null>(null);
   const [results, setResults] = useState<QaResult[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [groupedFields, setGroupedFields] = useState<GroupedField[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [onlyIssues, setOnlyIssues] = useState(true);
   const [onlyMultiTransaction, setOnlyMultiTransaction] = useState(false);
+  const [excludeMultiTransaction, setExcludeMultiTransaction] = useState(false);
+  const [acceptingField, setAcceptingField] = useState<string | null>(null);
 
   // Expanded states
   const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
@@ -153,6 +162,7 @@ export default function QAReviewPage({
         limit: "50",
         onlyIssues: String(onlyIssues),
         onlyMultiTransaction: String(onlyMultiTransaction),
+        excludeMultiTransaction: String(excludeMultiTransaction),
       });
 
       const res = await fetch(`/api/qa/${id}?${params}`);
@@ -161,6 +171,7 @@ export default function QAReviewPage({
       setQaRun(data.qaRun);
       setResults(data.results || []);
       setStats(data.stats);
+      setGroupedFields(data.groupedFields || []);
       setTotalPages(data.pagination?.totalPages || 1);
 
       // Initialize local acceptance state from existing data
@@ -187,7 +198,7 @@ export default function QAReviewPage({
     } finally {
       setLoading(false);
     }
-  }, [id, page, onlyIssues, onlyMultiTransaction]);
+  }, [id, page, onlyIssues, onlyMultiTransaction, excludeMultiTransaction]);
 
   useEffect(() => {
     fetchResults();
@@ -396,6 +407,33 @@ export default function QAReviewPage({
     }
   };
 
+  const acceptFieldGroup = async (field: string) => {
+    setAcceptingField(field);
+    try {
+      const res = await fetch(`/api/qa/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "acceptFieldGroup",
+          field,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(data.message || `Accepted all "${field}" changes`);
+        fetchResults();
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to accept field group");
+      }
+    } catch (error) {
+      toast.error("Failed to accept field group");
+    } finally {
+      setAcceptingField(null);
+    }
+  };
+
   const formatValue = (value: unknown): string => {
     if (value === null || value === undefined) return "-";
     if (typeof value === "object") return JSON.stringify(value);
@@ -589,12 +627,60 @@ export default function QAReviewPage({
                 checked={onlyMultiTransaction}
                 onCheckedChange={(checked) => {
                   setOnlyMultiTransaction(!!checked);
+                  if (checked) setExcludeMultiTransaction(false);
                   setPage(1);
                 }}
               />
-              Show only multi-transaction emails ({stats?.multiTransaction || 0})
+              Only multi-transaction ({stats?.multiTransaction || 0})
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={excludeMultiTransaction}
+                onCheckedChange={(checked) => {
+                  setExcludeMultiTransaction(!!checked);
+                  if (checked) setOnlyMultiTransaction(false);
+                  setPage(1);
+                }}
+              />
+              Exclude multi-transaction
             </label>
           </div>
+
+          {/* Grouped Field Actions */}
+          {groupedFields.length > 0 && (
+            <Card className="mb-4">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-amber-500" />
+                  Bulk Accept by Field Type ({groupedFields.reduce((sum, g) => sum + g.count, 0)} pending issues)
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-wrap gap-2">
+                  {groupedFields.map((group) => (
+                    <Button
+                      key={group.field}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => acceptFieldGroup(group.field)}
+                      disabled={acceptingField === group.field}
+                      className="text-sm"
+                    >
+                      {acceptingField === group.field ? (
+                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                      ) : (
+                        <Check className="h-3 w-3 mr-1" />
+                      )}
+                      {group.field} ({group.count} in {group.resultCount} results)
+                    </Button>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Click to accept all pending changes for that field across all results
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Results List */}
           <div className="space-y-4">

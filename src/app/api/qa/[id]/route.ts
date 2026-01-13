@@ -21,6 +21,7 @@ export async function GET(
   const searchParams = request.nextUrl.searchParams;
   const onlyIssues = searchParams.get("onlyIssues") === "true";
   const onlyMultiTransaction = searchParams.get("onlyMultiTransaction") === "true";
+  const excludeMultiTransaction = searchParams.get("excludeMultiTransaction") === "true";
   const page = parseInt(searchParams.get("page") || "1");
   const limit = parseInt(searchParams.get("limit") || "50");
   const offset = (page - 1) * limit;
@@ -58,6 +59,8 @@ export async function GET(
     }
     if (onlyMultiTransaction) {
       conditions.push(eq(qaResults.isMultiTransaction, true));
+    } else if (excludeMultiTransaction) {
+      conditions.push(eq(qaResults.isMultiTransaction, false));
     }
     return conditions.length === 1 ? conditions[0] : and(...conditions);
   };
@@ -103,6 +106,47 @@ export async function GET(
     .from(qaResults)
     .where(eq(qaResults.qaRunId, id));
 
+  // Get pending results to compute grouped field stats
+  const pendingResults = await db
+    .select({
+      id: qaResults.id,
+      fieldIssues: qaResults.fieldIssues,
+      status: qaResults.status,
+      acceptedFields: qaResults.acceptedFields,
+    })
+    .from(qaResults)
+    .where(
+      and(
+        eq(qaResults.qaRunId, id),
+        eq(qaResults.hasIssues, true),
+        eq(qaResults.status, "pending_review")
+      )
+    );
+
+  // Group pending issues by field name
+  const fieldGroups: Record<string, { count: number; resultIds: string[] }> = {};
+  for (const result of pendingResults) {
+    const issues = result.fieldIssues as Array<{ field: string }> || [];
+    for (const issue of issues) {
+      if (!fieldGroups[issue.field]) {
+        fieldGroups[issue.field] = { count: 0, resultIds: [] };
+      }
+      fieldGroups[issue.field].count++;
+      if (!fieldGroups[issue.field].resultIds.includes(result.id)) {
+        fieldGroups[issue.field].resultIds.push(result.id);
+      }
+    }
+  }
+
+  // Convert to sorted array
+  const groupedFields = Object.entries(fieldGroups)
+    .map(([field, data]) => ({
+      field,
+      count: data.count,
+      resultCount: data.resultIds.length,
+    }))
+    .sort((a, b) => b.count - a.count);
+
   return NextResponse.json({
     qaRun,
     sourceRun,
@@ -119,6 +163,7 @@ export async function GET(
       totalPages: Math.ceil(totalResults / limit),
     },
     stats,
+    groupedFields,
   });
 }
 
@@ -182,6 +227,82 @@ export async function PATCH(
     console.error("Failed to update QA result:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to update" },
+      { status: 500 }
+    );
+  }
+}
+
+// PUT /api/qa/[id] - Bulk operations (accept all issues for a field)
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+
+  try {
+    const body = await request.json();
+    const { action, field } = body;
+
+    if (action === "acceptFieldGroup" && field) {
+      // Get all pending results that have issues with this field
+      const pendingResults = await db
+        .select()
+        .from(qaResults)
+        .where(
+          and(
+            eq(qaResults.qaRunId, id),
+            eq(qaResults.hasIssues, true),
+            eq(qaResults.status, "pending_review")
+          )
+        );
+
+      let updatedCount = 0;
+
+      for (const result of pendingResults) {
+        const issues = result.fieldIssues as Array<{ field: string }> || [];
+        const hasFieldIssue = issues.some((issue) => issue.field === field);
+
+        if (hasFieldIssue) {
+          // Update acceptedFields to include this field
+          const currentAccepted = (result.acceptedFields as Record<string, boolean>) || {};
+          const newAccepted: Record<string, boolean> = { ...currentAccepted, [field]: true };
+
+          // Check if all fields are now accepted
+          const allAccepted = issues.every((issue) => newAccepted[issue.field]);
+          const anyAccepted = issues.some((issue) => newAccepted[issue.field]);
+
+          let newStatus: "accepted" | "partial" | "pending_review" = "pending_review";
+          if (allAccepted) {
+            newStatus = "accepted";
+          } else if (anyAccepted) {
+            newStatus = "partial";
+          }
+
+          await db
+            .update(qaResults)
+            .set({
+              acceptedFields: newAccepted,
+              status: newStatus,
+              reviewedAt: new Date(),
+            })
+            .where(eq(qaResults.id, result.id));
+
+          updatedCount++;
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: `Accepted "${field}" changes in ${updatedCount} results`,
+        updatedCount,
+      });
+    }
+
+    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+  } catch (error) {
+    console.error("Failed to perform bulk operation:", error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Failed to perform operation" },
       { status: 500 }
     );
   }

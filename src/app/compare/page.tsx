@@ -111,10 +111,20 @@ interface TransactionComparison {
   dataKeyDifferences: string[];
   winnerTransactionId: string | null;
   fieldOverrides: Record<string, unknown> | null;
-  // Multi-transaction tracking
+  // Multi-transaction tracking (always false for items in comparisons array now)
   runATransactionCount: number;
   runBTransactionCount: number;
   hasMultipleTransactions: boolean;
+}
+
+// For emails with multiple transactions - shows all transactions from both runs
+interface MultiTransactionEmail {
+  emailId: string;
+  emailSubject: string | null;
+  winnerTransactionId: string | null;
+  fieldOverrides: Record<string, unknown> | null;
+  runATransactions: Transaction[];
+  runBTransactions: Transaction[];
 }
 
 interface ComparisonSummary {
@@ -126,6 +136,8 @@ interface ComparisonSummary {
   winnersDesignated: number;
   excluded: number;
   discussions: number;
+  multiTransactionCount: number;
+  multiTransactionResolved: number;
   agreementRate: number;
 }
 
@@ -134,6 +146,7 @@ interface ComparisonResult {
   runB: ExtractionRun;
   summary: ComparisonSummary;
   comparisons: TransactionComparison[];
+  multiTransactionEmails: MultiTransactionEmail[];
 }
 
 interface EmailContent {
@@ -337,6 +350,56 @@ function ComparePageContent() {
     return { exclusiveItems: exclusive, differentByType: byType, differenceGroups: byTypeAndPattern };
   }, [comparison]);
 
+  // Helper to check if two transactions match (for multi-transaction pairing)
+  const transactionsMatch = (a: Transaction | null, b: Transaction | null): boolean => {
+    if (!a || !b) return false;
+    // Core fields that must match
+    if (a.type !== b.type) return false;
+    if (a.amount !== b.amount) return false;
+    if (a.symbol !== b.symbol) return false;
+    // Date should match (compare date portion only)
+    const dateA = a.date ? new Date(a.date).toISOString().split("T")[0] : null;
+    const dateB = b.date ? new Date(b.date).toISOString().split("T")[0] : null;
+    if (dateA !== dateB) return false;
+    return true;
+  };
+
+  // Analyze multi-transaction emails for matches
+  const multiTxnAnalysis = useMemo(() => {
+    if (!comparison?.multiTransactionEmails) {
+      return { withMatches: [], withoutMatches: [] };
+    }
+
+    const withMatches: Array<MultiTransactionEmail & { matchedPairs: Array<{ a: Transaction; b: Transaction }> }> = [];
+    const withoutMatches: MultiTransactionEmail[] = [];
+
+    for (const email of comparison.multiTransactionEmails) {
+      const matchedPairs: Array<{ a: Transaction; b: Transaction }> = [];
+      const usedA = new Set<string>();
+      const usedB = new Set<string>();
+
+      // Try to find matching pairs
+      for (const txnA of email.runATransactions) {
+        for (const txnB of email.runBTransactions) {
+          if (usedA.has(txnA.id) || usedB.has(txnB.id)) continue;
+          if (transactionsMatch(txnA, txnB)) {
+            matchedPairs.push({ a: txnA, b: txnB });
+            usedA.add(txnA.id);
+            usedB.add(txnB.id);
+          }
+        }
+      }
+
+      if (matchedPairs.length > 0) {
+        withMatches.push({ ...email, matchedPairs });
+      } else {
+        withoutMatches.push(email);
+      }
+    }
+
+    return { withMatches, withoutMatches };
+  }, [comparison?.multiTransactionEmails]);
+
   // Calculate winner stats by run
   const winnerStats = useMemo(() => {
     if (!comparison) {
@@ -349,6 +412,8 @@ function ComparePageContent() {
         pending: 0,
         likelyDiscussions: 0,
         multiTransaction: 0,
+        multiTxnWithMatches: 0,
+        multiTxnWithoutMatches: 0,
         total: 0,
       };
     }
@@ -363,17 +428,11 @@ function ComparePageContent() {
     let discussions = 0;
     let pending = 0;
     let likelyDiscussions = 0;
-    let multiTransaction = 0;
 
     for (const item of needsDecision) {
       // Count likely discussions
       if (isLikelyDiscussion(item.emailSubject)) {
         likelyDiscussions++;
-      }
-
-      // Count multi-transaction emails
-      if (item.hasMultipleTransactions) {
-        multiTransaction++;
       }
 
       if (!item.winnerTransactionId) {
@@ -399,10 +458,12 @@ function ComparePageContent() {
       discussions,
       pending,
       likelyDiscussions,
-      multiTransaction,
+      multiTransaction: comparison.summary.multiTransactionCount || 0,
+      multiTxnWithMatches: multiTxnAnalysis.withMatches.length,
+      multiTxnWithoutMatches: multiTxnAnalysis.withoutMatches.length,
       total: needsDecision.length,
     };
-  }, [comparison]);
+  }, [comparison, multiTxnAnalysis]);
 
   // Filter comparisons based on winner filter
   const filteredComparisons = useMemo(() => {
@@ -426,8 +487,6 @@ function ComparePageContent() {
           return item.winnerTransactionId === "discussion";
         case "likely_discussion":
           return isLikelyDiscussion(item.emailSubject) && item.winnerTransactionId !== "discussion";
-        case "multi_transaction":
-          return item.hasMultipleTransactions;
         case "pending":
           return !item.winnerTransactionId;
         default:
@@ -1091,20 +1150,17 @@ function ComparePageContent() {
     <Card
       key={item.emailId}
       className={cn(
-        // Multi-transaction emails get orange border (highest priority visual)
-        item.hasMultipleTransactions
-          ? "border-orange-400 bg-orange-50/50"
-          : item.winnerTransactionId
-            ? item.winnerTransactionId === "discussion"
-              ? "border-indigo-300 bg-indigo-50/30 opacity-60"
-              : item.winnerTransactionId === "exclude"
-                ? "border-red-300 bg-red-50/30 opacity-60"
-                : item.winnerTransactionId === "tie"
-                  ? "border-gray-300 bg-gray-50/50"
-                  : "border-green-300 bg-green-50/50"
-            : "",
+        item.winnerTransactionId
+          ? item.winnerTransactionId === "discussion"
+            ? "border-indigo-300 bg-indigo-50/30 opacity-60"
+            : item.winnerTransactionId === "exclude"
+              ? "border-red-300 bg-red-50/30 opacity-60"
+              : item.winnerTransactionId === "tie"
+                ? "border-gray-300 bg-gray-50/50"
+                : "border-green-300 bg-green-50/50"
+          : "",
         // Highlight likely discussions that haven't been marked yet
-        !item.winnerTransactionId && !item.hasMultipleTransactions && isLikelyDiscussion(item.emailSubject) && "ring-2 ring-indigo-300 ring-offset-1"
+        !item.winnerTransactionId && isLikelyDiscussion(item.emailSubject) && "ring-2 ring-indigo-300 ring-offset-1"
       )}
     >
       <Collapsible open={expandedItems.has(item.emailId)} onOpenChange={() => toggleExpanded(item.emailId)}>
@@ -1140,12 +1196,6 @@ function ComparePageContent() {
                 </Link>
               </div>
               <div className="flex items-center gap-2">
-                {item.hasMultipleTransactions && (
-                  <Badge variant="secondary" className="bg-orange-100 text-orange-800 gap-1" title={`Run A: ${item.runATransactionCount} txn(s), Run B: ${item.runBTransactionCount} txn(s)`}>
-                    <AlertCircle className="h-3 w-3" />
-                    Multi-txn ({item.runATransactionCount}/{item.runBTransactionCount})
-                  </Badge>
-                )}
                 {getWinnerBadge(item)}
                 {getStatusBadge(item.status)}
               </div>
@@ -1793,22 +1843,29 @@ function ComparePageContent() {
                     </button>
                   </div>
 
-                  {/* Multi-transaction warning */}
+                  {/* Multi-transaction info */}
                   {winnerStats.multiTransaction > 0 && (
-                    <button
-                      onClick={() => setWinnerFilter(winnerFilter === "multi_transaction" ? "all" : "multi_transaction")}
-                      className={`w-full p-2 rounded-lg border transition-all flex items-center justify-between ${
-                        winnerFilter === "multi_transaction"
-                          ? "border-orange-400 bg-orange-50"
-                          : "border-orange-200 bg-orange-50/50 hover:bg-orange-50"
-                      }`}
-                    >
-                      <span className="text-sm text-orange-700 flex items-center gap-2">
-                        <AlertCircle className="h-4 w-4" />
-                        {winnerStats.multiTransaction} emails have multiple transactions in one or both runs - review carefully
-                      </span>
-                      <span className="text-xs text-orange-600">Click to filter</span>
-                    </button>
+                    <div className="p-3 rounded-lg border border-orange-200 bg-orange-50/50">
+                      <div className="flex items-center gap-2 mb-2">
+                        <AlertCircle className="h-4 w-4 text-orange-600" />
+                        <span className="text-sm font-medium text-orange-800">
+                          {winnerStats.multiTransaction} emails have multiple transactions
+                        </span>
+                      </div>
+                      <div className="flex gap-4 text-xs text-orange-700">
+                        <span className="flex items-center gap-1">
+                          <CheckCircle2 className="h-3 w-3 text-green-600" />
+                          {winnerStats.multiTxnWithMatches} with matching transactions
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <AlertTriangle className="h-3 w-3 text-yellow-600" />
+                          {winnerStats.multiTxnWithoutMatches} need manual review
+                        </span>
+                      </div>
+                      <p className="text-xs text-orange-600 mt-1">
+                        See &quot;Multi-Transaction Emails&quot; section below
+                      </p>
+                    </div>
                   )}
 
                   {/* Likely discussions hint */}
@@ -1841,7 +1898,6 @@ function ComparePageContent() {
                           {winnerFilter === "discussion" && "Discussions"}
                           {winnerFilter === "exclude" && "Excluded"}
                           {winnerFilter === "likely_discussion" && "Likely discussions (unmarked)"}
-                          {winnerFilter === "multi_transaction" && "Multi-transaction emails"}
                           {winnerFilter === "pending" && "Pending decisions"}
                         </span>
                       </span>
@@ -2199,6 +2255,261 @@ function ComparePageContent() {
                     );
                   })}
                 </div>
+              </div>
+            )}
+
+            {/* SECTION: Multi-Transaction Emails */}
+            {comparison.multiTransactionEmails && comparison.multiTransactionEmails.length > 0 && (
+              <div className="mb-8">
+                <Card className="border-orange-200 mb-4">
+                  <CardHeader className="py-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <AlertCircle className="h-5 w-5 text-orange-600" />
+                        <CardTitle className="text-lg">Multi-Transaction Emails ({comparison.multiTransactionEmails.length})</CardTitle>
+                        <Badge variant="secondary" className="bg-green-100 text-green-800">
+                          {multiTxnAnalysis.withMatches.length} with matches
+                        </Badge>
+                        <Badge variant="secondary" className="bg-yellow-100 text-yellow-800">
+                          {multiTxnAnalysis.withoutMatches.length} need review
+                        </Badge>
+                      </div>
+                    </div>
+                  </CardHeader>
+                </Card>
+
+                <p className="text-sm text-gray-600 mb-4">
+                  These emails have multiple transactions in one or both runs. Review all transactions to determine the correct extraction.
+                </p>
+
+                {/* Emails with matching transactions */}
+                {multiTxnAnalysis.withMatches.length > 0 && (
+                  <div className="mb-6">
+                    <h3 className="text-md font-medium text-green-800 mb-3 flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4" />
+                      With Matching Transactions ({multiTxnAnalysis.withMatches.length})
+                    </h3>
+                    <p className="text-xs text-gray-500 mb-3">
+                      These emails have transactions that match between runs - likely correct but verify.
+                    </p>
+                    <div className="space-y-4">
+                      {multiTxnAnalysis.withMatches.map((email) => (
+                        <Card key={email.emailId} className="border-green-200 bg-green-50/30">
+                          <CardHeader className="py-3">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-sm truncate max-w-md">
+                                  {email.emailSubject || "No subject"}
+                                </span>
+                                <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                                  {email.runATransactions.length} in {runALabel}
+                                </Badge>
+                                <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+                                  {email.runBTransactions.length} in {runBLabel}
+                                </Badge>
+                                <Badge variant="secondary" className="bg-green-100 text-green-800">
+                                  {email.matchedPairs.length} matched
+                                </Badge>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {email.winnerTransactionId === "exclude" && (
+                                  <Badge variant="secondary" className="bg-red-100 text-red-800 gap-1">
+                                    <Ban className="h-3 w-3" />
+                                    Excluded
+                                  </Badge>
+                                )}
+                                {email.winnerTransactionId === "discussion" && (
+                                  <Badge variant="secondary" className="bg-indigo-100 text-indigo-800 gap-1">
+                                    <MessageSquare className="h-3 w-3" />
+                                    Discussion
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                          </CardHeader>
+                          <CardContent className="pt-0 pb-3">
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <div className="text-xs font-medium text-blue-700 mb-2">{runALabel} Transactions</div>
+                                {email.runATransactions.map((txn, idx) => (
+                                  <div key={txn.id} className="text-xs p-2 bg-blue-50 rounded mb-1">
+                                    <span className="font-medium">{txn.type}</span>
+                                    {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
+                                    {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
+                                  </div>
+                                ))}
+                              </div>
+                              <div>
+                                <div className="text-xs font-medium text-purple-700 mb-2">{runBLabel} Transactions</div>
+                                {email.runBTransactions.map((txn, idx) => (
+                                  <div key={txn.id} className="text-xs p-2 bg-purple-50 rounded mb-1">
+                                    <span className="font-medium">{txn.type}</span>
+                                    {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
+                                    {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 mt-3 pt-3 border-t">
+                              <span className="text-xs text-gray-500">Actions:</span>
+                              <Button
+                                size="sm"
+                                variant={email.winnerTransactionId === "discussion" ? "default" : "outline"}
+                                className={`h-6 text-xs ${
+                                  email.winnerTransactionId === "discussion"
+                                    ? "bg-indigo-600 hover:bg-indigo-700"
+                                    : "border-indigo-300 text-indigo-700"
+                                }`}
+                                onClick={() => designateWinner(email.emailId, "discussion")}
+                              >
+                                Discussion
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant={email.winnerTransactionId === "exclude" ? "default" : "outline"}
+                                className={`h-6 text-xs ${
+                                  email.winnerTransactionId === "exclude"
+                                    ? "bg-red-600 hover:bg-red-700"
+                                    : "border-red-300 text-red-700"
+                                }`}
+                                onClick={() => designateWinner(email.emailId, "exclude")}
+                              >
+                                Exclude
+                              </Button>
+                              {email.winnerTransactionId && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 text-xs text-gray-500"
+                                  onClick={() => designateWinner(email.emailId, null)}
+                                >
+                                  Clear
+                                </Button>
+                              )}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Emails without matching transactions */}
+                {multiTxnAnalysis.withoutMatches.length > 0 && (
+                  <div>
+                    <h3 className="text-md font-medium text-yellow-800 mb-3 flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4" />
+                      Needs Manual Review ({multiTxnAnalysis.withoutMatches.length})
+                    </h3>
+                    <p className="text-xs text-gray-500 mb-3">
+                      These emails have different transactions between runs - requires careful review.
+                    </p>
+                    <div className="space-y-4">
+                      {multiTxnAnalysis.withoutMatches.map((email) => (
+                        <Card key={email.emailId} className="border-yellow-200 bg-yellow-50/30">
+                          <CardHeader className="py-3">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-sm truncate max-w-md">
+                                  {email.emailSubject || "No subject"}
+                                </span>
+                                <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                                  {email.runATransactions.length} in {runALabel}
+                                </Badge>
+                                <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+                                  {email.runBTransactions.length} in {runBLabel}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {email.winnerTransactionId === "exclude" && (
+                                  <Badge variant="secondary" className="bg-red-100 text-red-800 gap-1">
+                                    <Ban className="h-3 w-3" />
+                                    Excluded
+                                  </Badge>
+                                )}
+                                {email.winnerTransactionId === "discussion" && (
+                                  <Badge variant="secondary" className="bg-indigo-100 text-indigo-800 gap-1">
+                                    <MessageSquare className="h-3 w-3" />
+                                    Discussion
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                          </CardHeader>
+                          <CardContent className="pt-0 pb-3">
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <div className="text-xs font-medium text-blue-700 mb-2">{runALabel} Transactions</div>
+                                {email.runATransactions.length === 0 ? (
+                                  <div className="text-xs text-gray-400 italic">No transactions</div>
+                                ) : (
+                                  email.runATransactions.map((txn, idx) => (
+                                    <div key={txn.id} className="text-xs p-2 bg-blue-50 rounded mb-1">
+                                      <span className="font-medium">{txn.type}</span>
+                                      {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
+                                      {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                              <div>
+                                <div className="text-xs font-medium text-purple-700 mb-2">{runBLabel} Transactions</div>
+                                {email.runBTransactions.length === 0 ? (
+                                  <div className="text-xs text-gray-400 italic">No transactions</div>
+                                ) : (
+                                  email.runBTransactions.map((txn, idx) => (
+                                    <div key={txn.id} className="text-xs p-2 bg-purple-50 rounded mb-1">
+                                      <span className="font-medium">{txn.type}</span>
+                                      {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
+                                      {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 mt-3 pt-3 border-t">
+                              <span className="text-xs text-gray-500">Actions:</span>
+                              <Button
+                                size="sm"
+                                variant={email.winnerTransactionId === "discussion" ? "default" : "outline"}
+                                className={`h-6 text-xs ${
+                                  email.winnerTransactionId === "discussion"
+                                    ? "bg-indigo-600 hover:bg-indigo-700"
+                                    : "border-indigo-300 text-indigo-700"
+                                }`}
+                                onClick={() => designateWinner(email.emailId, "discussion")}
+                              >
+                                Discussion
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant={email.winnerTransactionId === "exclude" ? "default" : "outline"}
+                                className={`h-6 text-xs ${
+                                  email.winnerTransactionId === "exclude"
+                                    ? "bg-red-600 hover:bg-red-700"
+                                    : "border-red-300 text-red-700"
+                                }`}
+                                onClick={() => designateWinner(email.emailId, "exclude")}
+                              >
+                                Exclude
+                              </Button>
+                              {email.winnerTransactionId && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 text-xs text-gray-500"
+                                  onClick={() => designateWinner(email.emailId, null)}
+                                >
+                                  Clear
+                                </Button>
+                              )}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

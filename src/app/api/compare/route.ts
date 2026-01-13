@@ -13,10 +13,20 @@ interface TransactionComparison {
   dataKeyDifferences: string[]; // Keys from the data field that differ
   winnerTransactionId: string | null; // The email's current winner
   fieldOverrides: Record<string, unknown> | null; // User-edited field values for synthesis
-  // Multi-transaction tracking
-  runATransactionCount: number; // How many transactions from this email in run A
-  runBTransactionCount: number; // How many transactions from this email in run B
-  hasMultipleTransactions: boolean; // True if either run has multiple transactions from this email
+  // Multi-transaction tracking (for single-transaction emails, these are always 1/1/false)
+  runATransactionCount: number;
+  runBTransactionCount: number;
+  hasMultipleTransactions: boolean;
+}
+
+// For emails with multiple transactions - shows all transactions from both runs
+interface MultiTransactionEmail {
+  emailId: string;
+  emailSubject: string | null;
+  winnerTransactionId: string | null;
+  fieldOverrides: Record<string, unknown> | null;
+  runATransactions: Array<typeof transactions.$inferSelect>;
+  runBTransactions: Array<typeof transactions.$inferSelect>;
 }
 
 // Fields to compare between transactions (excluding confidence per user request)
@@ -202,22 +212,39 @@ export async function GET(request: NextRequest) {
       db.select().from(transactions).where(eq(transactions.extractionRunId, runBId)),
     ]);
 
-    // Group transactions by source email and track counts
-    const byEmailA = new Map<string, typeof transactions.$inferSelect>();
-    const byEmailB = new Map<string, typeof transactions.$inferSelect>();
-    const countByEmailA = new Map<string, number>();
-    const countByEmailB = new Map<string, number>();
+    // Group transactions by source email - collect ALL transactions per email
+    const allByEmailA = new Map<string, Array<typeof transactions.$inferSelect>>();
+    const allByEmailB = new Map<string, Array<typeof transactions.$inferSelect>>();
 
     for (const t of transactionsA) {
       if (t.sourceEmailId) {
-        byEmailA.set(t.sourceEmailId, t);
-        countByEmailA.set(t.sourceEmailId, (countByEmailA.get(t.sourceEmailId) || 0) + 1);
+        if (!allByEmailA.has(t.sourceEmailId)) {
+          allByEmailA.set(t.sourceEmailId, []);
+        }
+        allByEmailA.get(t.sourceEmailId)!.push(t);
       }
     }
     for (const t of transactionsB) {
       if (t.sourceEmailId) {
-        byEmailB.set(t.sourceEmailId, t);
-        countByEmailB.set(t.sourceEmailId, (countByEmailB.get(t.sourceEmailId) || 0) + 1);
+        if (!allByEmailB.has(t.sourceEmailId)) {
+          allByEmailB.set(t.sourceEmailId, []);
+        }
+        allByEmailB.get(t.sourceEmailId)!.push(t);
+      }
+    }
+
+    // For single-transaction emails, create simple maps (backward compatible)
+    const byEmailA = new Map<string, typeof transactions.$inferSelect>();
+    const byEmailB = new Map<string, typeof transactions.$inferSelect>();
+
+    for (const [emailId, txns] of allByEmailA) {
+      if (txns.length === 1) {
+        byEmailA.set(emailId, txns[0]);
+      }
+    }
+    for (const [emailId, txns] of allByEmailB) {
+      if (txns.length === 1) {
+        byEmailB.set(emailId, txns[0]);
       }
     }
 
@@ -237,43 +264,65 @@ export async function GET(request: NextRequest) {
 
     const emailMap = new Map(emailList.map((e) => [e.id, e]));
 
-    // Compare transactions
+    // Separate single-transaction and multi-transaction emails
     const comparisons: TransactionComparison[] = [];
+    const multiTransactionEmails: MultiTransactionEmail[] = [];
 
     for (const emailId of allEmailIds) {
-      const tA = byEmailA.get(emailId) || null;
-      const tB = byEmailB.get(emailId) || null;
-      const { status, differences, dataKeyDifferences } = compareTransactions(tA, tB);
+      const txnsA = allByEmailA.get(emailId) || [];
+      const txnsB = allByEmailB.get(emailId) || [];
       const emailInfo = emailMap.get(emailId);
 
-      const runACount = countByEmailA.get(emailId) || 0;
-      const runBCount = countByEmailB.get(emailId) || 0;
+      // Check if this is a multi-transaction email
+      const isMultiTransaction = txnsA.length > 1 || txnsB.length > 1;
 
-      comparisons.push({
-        emailId,
-        emailSubject: emailInfo?.subject || null,
-        runATransaction: tA,
-        runBTransaction: tB,
-        status,
-        differences,
-        dataKeyDifferences,
-        winnerTransactionId: emailInfo?.winnerTransactionId || null,
-        fieldOverrides: (emailInfo?.fieldOverrides as Record<string, unknown>) || null,
-        runATransactionCount: runACount,
-        runBTransactionCount: runBCount,
-        hasMultipleTransactions: runACount > 1 || runBCount > 1,
-      });
+      if (isMultiTransaction) {
+        // Add to multi-transaction list with all transactions
+        multiTransactionEmails.push({
+          emailId,
+          emailSubject: emailInfo?.subject || null,
+          winnerTransactionId: emailInfo?.winnerTransactionId || null,
+          fieldOverrides: (emailInfo?.fieldOverrides as Record<string, unknown>) || null,
+          runATransactions: txnsA,
+          runBTransactions: txnsB,
+        });
+      } else {
+        // Single transaction per run - use normal comparison
+        const tA = txnsA[0] || null;
+        const tB = txnsB[0] || null;
+        const { status, differences, dataKeyDifferences } = compareTransactions(tA, tB);
+
+        comparisons.push({
+          emailId,
+          emailSubject: emailInfo?.subject || null,
+          runATransaction: tA,
+          runBTransaction: tB,
+          status,
+          differences,
+          dataKeyDifferences,
+          winnerTransactionId: emailInfo?.winnerTransactionId || null,
+          fieldOverrides: (emailInfo?.fieldOverrides as Record<string, unknown>) || null,
+          runATransactionCount: txnsA.length,
+          runBTransactionCount: txnsB.length,
+          hasMultipleTransactions: false,
+        });
+      }
     }
 
     // Sort by status (differences first, then matches)
     const statusOrder = { different: 0, only_a: 1, only_b: 2, match: 3 };
     comparisons.sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
 
-    // Calculate summary stats
+    // Calculate summary stats (excluding multi-transaction emails from regular counts)
     const disputedCount = comparisons.filter((c) => c.status !== "match").length;
     const winnersCount = comparisons.filter((c) => c.winnerTransactionId !== null && c.winnerTransactionId !== "exclude" && c.winnerTransactionId !== "discussion").length;
     const excludedCount = comparisons.filter((c) => c.winnerTransactionId === "exclude").length;
     const discussionsCount = comparisons.filter((c) => c.winnerTransactionId === "discussion").length;
+
+    // Count multi-transaction email decisions
+    const multiTxnWinners = multiTransactionEmails.filter((m) => m.winnerTransactionId !== null && m.winnerTransactionId !== "exclude" && m.winnerTransactionId !== "discussion").length;
+    const multiTxnExcluded = multiTransactionEmails.filter((m) => m.winnerTransactionId === "exclude").length;
+    const multiTxnDiscussions = multiTransactionEmails.filter((m) => m.winnerTransactionId === "discussion").length;
 
     const summary = {
       total: comparisons.length,
@@ -284,6 +333,8 @@ export async function GET(request: NextRequest) {
       winnersDesignated: winnersCount,
       excluded: excludedCount,
       discussions: discussionsCount,
+      multiTransactionCount: multiTransactionEmails.length,
+      multiTransactionResolved: multiTxnWinners + multiTxnExcluded + multiTxnDiscussions,
       agreementRate: 0,
     };
     summary.agreementRate =
@@ -296,6 +347,7 @@ export async function GET(request: NextRequest) {
       runB: runB[0],
       summary,
       comparisons,
+      multiTransactionEmails,
     });
   } catch (error) {
     console.error("Comparison error:", error);

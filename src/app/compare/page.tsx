@@ -34,6 +34,7 @@ import {
   Loader2,
   Equal,
   Layers,
+  ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -549,8 +550,32 @@ function ComparePageContent() {
             <div className="border rounded-lg overflow-hidden">
               <div className="grid grid-cols-3 gap-4 py-2 px-3 bg-gray-100 border-b font-medium text-sm">
                 <div>Field</div>
-                <div className="text-blue-700">{runALabel}</div>
-                <div className="text-purple-700">{runBLabel}</div>
+                <div className="text-blue-700 flex items-center gap-2">
+                  {runALabel}
+                  {item.runATransaction && (
+                    <Link
+                      href={`/transactions/${item.runATransaction.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-blue-500 hover:text-blue-700"
+                      title="View transaction details"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </Link>
+                  )}
+                </div>
+                <div className="text-purple-700 flex items-center gap-2">
+                  {runBLabel}
+                  {item.runBTransaction && (
+                    <Link
+                      href={`/transactions/${item.runBTransaction.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-purple-500 hover:text-purple-700"
+                      title="View transaction details"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </Link>
+                  )}
+                </div>
               </div>
 
               {/* Core fields */}

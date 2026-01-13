@@ -754,7 +754,28 @@ function ComparePageContent() {
               {(() => {
                 const dataA = (item.runATransaction?.data || {}) as Record<string, unknown>;
                 const dataB = (item.runBTransaction?.data || {}) as Record<string, unknown>;
-                const allKeys = new Set([...Object.keys(dataA), ...Object.keys(dataB)]);
+
+                // Helper to flatten data - handles numeric keys with {key, value} objects
+                const flattenData = (data: Record<string, unknown>): Record<string, unknown> => {
+                  const result: Record<string, unknown> = {};
+                  for (const [k, v] of Object.entries(data)) {
+                    // Skip numeric keys that contain {key, value} objects - flatten them instead
+                    if (/^\d+$/.test(k) && v && typeof v === "object" && "key" in v && "value" in v) {
+                      const obj = v as { key: string; value: unknown };
+                      result[obj.key] = obj.value;
+                    } else if (/^\d+$/.test(k) && v && typeof v === "object") {
+                      // Skip other numeric indexed objects (arrays serialized as objects)
+                      continue;
+                    } else {
+                      result[k] = v;
+                    }
+                  }
+                  return result;
+                };
+
+                const flatA = flattenData(dataA);
+                const flatB = flattenData(dataB);
+                const allKeys = new Set([...Object.keys(flatA), ...Object.keys(flatB)]);
 
                 if (allKeys.size === 0) return null;
 
@@ -766,8 +787,8 @@ function ComparePageContent() {
                     {Array.from(allKeys).sort().map((key) =>
                       renderTransactionDetail(
                         key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim(),
-                        dataA[key],
-                        dataB[key],
+                        flatA[key],
+                        flatB[key],
                         item.dataKeyDifferences?.includes(key) || false
                       )
                     )}

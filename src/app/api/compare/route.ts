@@ -275,8 +275,8 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Get all unique email IDs
-    const allEmailIds = new Set([...byEmailA.keys(), ...byEmailB.keys()]);
+    // Get all unique email IDs (from the full maps, not just single-transaction maps)
+    const allEmailIds = new Set([...allByEmailA.keys(), ...allByEmailB.keys()]);
 
     // Fetch email info including winnerTransactionId and fieldOverrides
     const emailList = await db

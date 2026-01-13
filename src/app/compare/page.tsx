@@ -50,9 +50,11 @@ import {
   Check,
   X,
   Ban,
+  MessageSquare,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
+import { cn } from "@/lib/utils";
 
 interface ExtractionRun {
   id: string;
@@ -118,6 +120,7 @@ interface ComparisonSummary {
   onlyB: number;
   winnersDesignated: number;
   excluded: number;
+  discussions: number;
   agreementRate: number;
 }
 
@@ -166,8 +169,15 @@ function ComparePageContent() {
   // Track which comparison we've auto-assigned exclusive winners for
   const autoAssignedForRef = useRef<string | null>(null);
 
-  // Filter state: "all" | "run_a" | "run_b" | "tie" | "exclude" | "pending"
+  // Filter state: "all" | "run_a" | "run_b" | "tie" | "exclude" | "discussion" | "pending"
   const [winnerFilter, setWinnerFilter] = useState<string>("all");
+
+  // Helper to detect likely discussions by email subject
+  const isLikelyDiscussion = (subject: string | null): boolean => {
+    if (!subject) return false;
+    const lower = subject.toLowerCase().trim();
+    return lower.startsWith("re:") || lower.startsWith("fw:") || lower.startsWith("fwd:");
+  };
 
   const fetchRuns = useCallback(async () => {
     try {
@@ -330,7 +340,9 @@ function ComparePageContent() {
         runBWins: 0,
         ties: 0,
         excluded: 0,
+        discussions: 0,
         pending: 0,
+        likelyDiscussions: 0,
         total: 0,
       };
     }
@@ -342,15 +354,24 @@ function ComparePageContent() {
     let runBWins = 0;
     let ties = 0;
     let excluded = 0;
+    let discussions = 0;
     let pending = 0;
+    let likelyDiscussions = 0;
 
     for (const item of needsDecision) {
+      // Count likely discussions
+      if (isLikelyDiscussion(item.emailSubject)) {
+        likelyDiscussions++;
+      }
+
       if (!item.winnerTransactionId) {
         pending++;
       } else if (item.winnerTransactionId === "tie") {
         ties++;
       } else if (item.winnerTransactionId === "exclude") {
         excluded++;
+      } else if (item.winnerTransactionId === "discussion") {
+        discussions++;
       } else if (item.winnerTransactionId === item.runATransaction?.id) {
         runAWins++;
       } else if (item.winnerTransactionId === item.runBTransaction?.id) {
@@ -363,7 +384,9 @@ function ComparePageContent() {
       runBWins,
       ties,
       excluded,
+      discussions,
       pending,
+      likelyDiscussions,
       total: needsDecision.length,
     };
   }, [comparison]);
@@ -386,6 +409,10 @@ function ComparePageContent() {
           return item.winnerTransactionId === "tie";
         case "exclude":
           return item.winnerTransactionId === "exclude";
+        case "discussion":
+          return item.winnerTransactionId === "discussion";
+        case "likely_discussion":
+          return isLikelyDiscussion(item.emailSubject) && item.winnerTransactionId !== "discussion";
         case "pending":
           return !item.winnerTransactionId;
         default:
@@ -613,7 +640,7 @@ function ComparePageContent() {
 
   const bulkDesignateWinner = async (
     items: TransactionComparison[],
-    winnerType: "a" | "b" | "tie" | "exclude"
+    winnerType: "a" | "b" | "tie" | "exclude" | "discussion"
   ) => {
     const typeKey = items[0]?.runATransaction?.type || items[0]?.runBTransaction?.type || "unknown";
     setBulkLoading((prev) => new Set(prev).add(typeKey));
@@ -626,9 +653,11 @@ function ComparePageContent() {
             ? "tie"
             : winnerType === "exclude"
               ? "exclude"
-              : winnerType === "a"
-                ? item.runATransaction?.id || null
-                : item.runBTransaction?.id || null,
+              : winnerType === "discussion"
+                ? "discussion"
+                : winnerType === "a"
+                  ? item.runATransaction?.id || null
+                  : item.runBTransaction?.id || null,
       }));
 
       const res = await fetch("/api/compare", {
@@ -849,6 +878,15 @@ function ComparePageContent() {
   const getWinnerBadge = (item: TransactionComparison) => {
     if (!item.winnerTransactionId) return null;
 
+    if (item.winnerTransactionId === "discussion") {
+      return (
+        <Badge variant="secondary" className="bg-indigo-100 text-indigo-800 gap-1">
+          <MessageSquare className="h-3 w-3" />
+          Discussion
+        </Badge>
+      );
+    }
+
     if (item.winnerTransactionId === "exclude") {
       return (
         <Badge variant="secondary" className="bg-red-100 text-red-800 gap-1">
@@ -1037,15 +1075,19 @@ function ComparePageContent() {
   const renderComparisonItem = (item: TransactionComparison, showTypeColumn = false) => (
     <Card
       key={item.emailId}
-      className={
+      className={cn(
         item.winnerTransactionId
-          ? item.winnerTransactionId === "exclude"
-            ? "border-red-300 bg-red-50/30 opacity-60"
-            : item.winnerTransactionId === "tie"
-              ? "border-gray-300 bg-gray-50/50"
-              : "border-green-300 bg-green-50/50"
-          : ""
-      }
+          ? item.winnerTransactionId === "discussion"
+            ? "border-indigo-300 bg-indigo-50/30 opacity-60"
+            : item.winnerTransactionId === "exclude"
+              ? "border-red-300 bg-red-50/30 opacity-60"
+              : item.winnerTransactionId === "tie"
+                ? "border-gray-300 bg-gray-50/50"
+                : "border-green-300 bg-green-50/50"
+          : "",
+        // Highlight likely discussions that haven't been marked yet
+        !item.winnerTransactionId && isLikelyDiscussion(item.emailSubject) && "ring-2 ring-indigo-300 ring-offset-1"
+      )}
     >
       <Collapsible open={expandedItems.has(item.emailId)} onOpenChange={() => toggleExpanded(item.emailId)}>
         <CollapsibleTrigger asChild>
@@ -1476,6 +1518,19 @@ function ComparePageContent() {
                 </Button>
                 <Button
                   size="sm"
+                  variant={item.winnerTransactionId === "discussion" ? "default" : "outline"}
+                  className={`gap-1 ${
+                    item.winnerTransactionId === "discussion"
+                      ? "bg-indigo-600 hover:bg-indigo-700"
+                      : "border-indigo-300 text-indigo-700 hover:bg-indigo-50"
+                  }`}
+                  onClick={() => designateWinner(item.emailId, "discussion")}
+                >
+                  <MessageSquare className="h-3 w-3" />
+                  Discussion
+                </Button>
+                <Button
+                  size="sm"
                   variant={item.winnerTransactionId === "exclude" ? "default" : "outline"}
                   className={`gap-1 ${
                     item.winnerTransactionId === "exclude"
@@ -1485,7 +1540,7 @@ function ComparePageContent() {
                   onClick={() => designateWinner(item.emailId, "exclude")}
                 >
                   <Ban className="h-3 w-3" />
-                  Do Not Use
+                  Exclude
                 </Button>
                 {item.winnerTransactionId && (
                   <Button
@@ -1634,7 +1689,7 @@ function ComparePageContent() {
                 </CardHeader>
                 <CardContent className="pt-0">
                   {/* Winner Distribution */}
-                  <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-4">
                     <button
                       onClick={() => setWinnerFilter(winnerFilter === "run_a" ? "all" : "run_a")}
                       className={`p-3 rounded-lg border-2 transition-all text-left ${
@@ -1667,6 +1722,17 @@ function ComparePageContent() {
                     >
                       <div className="text-2xl font-bold text-gray-600">{winnerStats.ties}</div>
                       <p className="text-xs text-gray-600">Ties</p>
+                    </button>
+                    <button
+                      onClick={() => setWinnerFilter(winnerFilter === "discussion" ? "all" : "discussion")}
+                      className={`p-3 rounded-lg border-2 transition-all text-left ${
+                        winnerFilter === "discussion"
+                          ? "border-indigo-500 bg-indigo-50"
+                          : "border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/50"
+                      }`}
+                    >
+                      <div className="text-2xl font-bold text-indigo-600">{winnerStats.discussions}</div>
+                      <p className="text-xs text-gray-600">Discussions</p>
                     </button>
                     <button
                       onClick={() => setWinnerFilter(winnerFilter === "exclude" ? "all" : "exclude")}
@@ -1703,16 +1769,36 @@ function ComparePageContent() {
                     </button>
                   </div>
 
+                  {/* Likely discussions hint */}
+                  {winnerStats.likelyDiscussions > 0 && (
+                    <button
+                      onClick={() => setWinnerFilter(winnerFilter === "likely_discussion" ? "all" : "likely_discussion")}
+                      className={`w-full p-2 rounded-lg border transition-all flex items-center justify-between ${
+                        winnerFilter === "likely_discussion"
+                          ? "border-indigo-400 bg-indigo-50"
+                          : "border-indigo-200 bg-indigo-50/50 hover:bg-indigo-50"
+                      }`}
+                    >
+                      <span className="text-sm text-indigo-700 flex items-center gap-2">
+                        <MessageSquare className="h-4 w-4" />
+                        {winnerStats.likelyDiscussions} emails with subjects starting with re:, fw:, or fwd: may be discussions
+                      </span>
+                      <span className="text-xs text-indigo-600">Click to filter</span>
+                    </button>
+                  )}
+
                   {/* Filter indicator */}
                   {winnerFilter !== "all" && (
-                    <div className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg">
+                    <div className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg mt-4">
                       <span className="text-sm text-gray-600">
                         Showing only:{" "}
                         <span className="font-medium">
                           {winnerFilter === "run_a" && `${runALabel} wins`}
                           {winnerFilter === "run_b" && `${runBLabel} wins`}
                           {winnerFilter === "tie" && "Ties"}
+                          {winnerFilter === "discussion" && "Discussions"}
                           {winnerFilter === "exclude" && "Excluded"}
+                          {winnerFilter === "likely_discussion" && "Likely discussions (unmarked)"}
                           {winnerFilter === "pending" && "Pending decisions"}
                         </span>
                       </span>

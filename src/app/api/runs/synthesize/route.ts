@@ -221,6 +221,12 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
       continue;
     }
 
+    // Skip discussions - these are conversational emails, not transactions
+    if (winner === "discussion") {
+      transactionsExcluded++; // Count discussions in excluded for simplicity
+      continue;
+    }
+
     let winnerTransaction: typeof transactions.$inferSelect | null = null;
     let loserTransaction: typeof transactions.$inferSelect | null = null;
     let reason = "";

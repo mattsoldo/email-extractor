@@ -257,8 +257,9 @@ export async function GET(request: NextRequest) {
 
     // Calculate summary stats
     const disputedCount = comparisons.filter((c) => c.status !== "match").length;
-    const winnersCount = comparisons.filter((c) => c.winnerTransactionId !== null && c.winnerTransactionId !== "exclude").length;
+    const winnersCount = comparisons.filter((c) => c.winnerTransactionId !== null && c.winnerTransactionId !== "exclude" && c.winnerTransactionId !== "discussion").length;
     const excludedCount = comparisons.filter((c) => c.winnerTransactionId === "exclude").length;
+    const discussionsCount = comparisons.filter((c) => c.winnerTransactionId === "discussion").length;
 
     const summary = {
       total: comparisons.length,
@@ -268,6 +269,7 @@ export async function GET(request: NextRequest) {
       onlyB: comparisons.filter((c) => c.status === "only_b").length,
       winnersDesignated: winnersCount,
       excluded: excludedCount,
+      discussions: discussionsCount,
       agreementRate: 0,
     };
     summary.agreementRate =
@@ -317,8 +319,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate transaction if provided (skip validation for special values "tie" and "exclude")
-    if (winnerTransactionId && winnerTransactionId !== "tie" && winnerTransactionId !== "exclude") {
+    // Validate transaction if provided (skip validation for special values "tie", "exclude", and "discussion")
+    if (winnerTransactionId && winnerTransactionId !== "tie" && winnerTransactionId !== "exclude" && winnerTransactionId !== "discussion") {
       const txn = await db
         .select()
         .from(transactions)
@@ -352,7 +354,9 @@ export async function POST(request: NextRequest) {
         ? "Marked as tie"
         : winnerTransactionId === "exclude"
           ? "Marked as excluded"
-          : "Winner set";
+          : winnerTransactionId === "discussion"
+            ? "Marked as discussion"
+            : "Winner set";
 
     return NextResponse.json({
       message,

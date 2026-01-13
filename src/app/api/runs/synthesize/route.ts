@@ -176,7 +176,8 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
   };
 
   // Get all emails with their winner designations and field overrides
-  const allEmailIds = new Set([...byEmailA.keys(), ...byEmailB.keys()]);
+  // Use the full maps (allByEmailA/allByEmailB) not just single-transaction maps
+  const allEmailIds = new Set([...allByEmailA.keys(), ...allByEmailB.keys()]);
   const emailList = await db
     .select({
       id: emails.id,

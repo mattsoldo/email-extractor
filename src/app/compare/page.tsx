@@ -164,7 +164,8 @@ function ComparePageContent() {
     fetchRuns();
   }, [fetchRuns]);
 
-  // Helper to get difference pattern key (which fields are only in A vs only in B)
+  // Helper to get difference pattern key (which DATA keys are only in A vs only in B)
+  // We only group by data key presence, NOT by which standard fields differ
   const getDifferencePattern = (item: TransactionComparison): string => {
     const dataA = (item.runATransaction?.data || {}) as Record<string, unknown>;
     const dataB = (item.runBTransaction?.data || {}) as Record<string, unknown>;
@@ -185,16 +186,13 @@ function ComparePageContent() {
     const keysA = flattenData(dataA);
     const keysB = flattenData(dataB);
 
-    // Find keys only in A or only in B
+    // Find keys only in A or only in B (this is what we group by)
     const onlyInA = [...keysA].filter((k) => !keysB.has(k)).sort();
     const onlyInB = [...keysB].filter((k) => !keysA.has(k)).sort();
 
-    // Also include regular field differences
-    const fieldDiffs = item.differences
-      .filter((d) => !d.startsWith("data."))
-      .sort();
-
-    return `fields:${fieldDiffs.join(",")}|onlyA:${onlyInA.join(",")}|onlyB:${onlyInB.join(",")}`;
+    // Only group by data key differences, not standard field differences
+    // This way transactions with same extra data keys get grouped together
+    return `onlyA:${onlyInA.join(",")}|onlyB:${onlyInB.join(",")}`;
   };
 
   // Interface for grouped differences
@@ -239,16 +237,16 @@ function ComparePageContent() {
       const patternMap = byTypeAndPattern.get(type)!;
       if (!patternMap.has(pattern)) {
         // Parse the pattern to extract readable info
+        // Format: "onlyA:field1,field2|onlyB:field3,field4"
         const parts = pattern.split("|");
-        const fieldDiffs = parts[0]?.replace("fields:", "").split(",").filter(Boolean) || [];
-        const onlyA = parts[1]?.replace("onlyA:", "").split(",").filter(Boolean) || [];
-        const onlyB = parts[2]?.replace("onlyB:", "").split(",").filter(Boolean) || [];
+        const onlyA = parts[0]?.replace("onlyA:", "").split(",").filter(Boolean) || [];
+        const onlyB = parts[1]?.replace("onlyB:", "").split(",").filter(Boolean) || [];
 
         patternMap.set(pattern, {
           pattern,
           fieldsOnlyInA: onlyA,
           fieldsOnlyInB: onlyB,
-          commonDifferences: fieldDiffs,
+          commonDifferences: [], // We no longer track standard field diffs in pattern
           items: [],
         });
       }

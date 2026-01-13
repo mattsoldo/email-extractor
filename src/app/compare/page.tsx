@@ -166,6 +166,9 @@ function ComparePageContent() {
   // Track which comparison we've auto-assigned exclusive winners for
   const autoAssignedForRef = useRef<string | null>(null);
 
+  // Filter state: "all" | "run_a" | "run_b" | "tie" | "exclude" | "pending"
+  const [winnerFilter, setWinnerFilter] = useState<string>("all");
+
   const fetchRuns = useCallback(async () => {
     try {
       const res = await fetch("/api/extraction-runs");
@@ -318,6 +321,145 @@ function ComparePageContent() {
 
     return { exclusiveItems: exclusive, differentByType: byType, differenceGroups: byTypeAndPattern };
   }, [comparison]);
+
+  // Calculate winner stats by run
+  const winnerStats = useMemo(() => {
+    if (!comparison) {
+      return {
+        runAWins: 0,
+        runBWins: 0,
+        ties: 0,
+        excluded: 0,
+        pending: 0,
+        total: 0,
+      };
+    }
+
+    // Only count non-matching comparisons (those that need decisions)
+    const needsDecision = comparison.comparisons.filter((c) => c.status !== "match");
+
+    let runAWins = 0;
+    let runBWins = 0;
+    let ties = 0;
+    let excluded = 0;
+    let pending = 0;
+
+    for (const item of needsDecision) {
+      if (!item.winnerTransactionId) {
+        pending++;
+      } else if (item.winnerTransactionId === "tie") {
+        ties++;
+      } else if (item.winnerTransactionId === "exclude") {
+        excluded++;
+      } else if (item.winnerTransactionId === item.runATransaction?.id) {
+        runAWins++;
+      } else if (item.winnerTransactionId === item.runBTransaction?.id) {
+        runBWins++;
+      }
+    }
+
+    return {
+      runAWins,
+      runBWins,
+      ties,
+      excluded,
+      pending,
+      total: needsDecision.length,
+    };
+  }, [comparison]);
+
+  // Filter comparisons based on winner filter
+  const filteredComparisons = useMemo(() => {
+    if (!comparison) return [];
+    if (winnerFilter === "all") return comparison.comparisons;
+
+    return comparison.comparisons.filter((item) => {
+      // Always exclude matches from filtering (they're not shown anyway)
+      if (item.status === "match") return true;
+
+      switch (winnerFilter) {
+        case "run_a":
+          return item.winnerTransactionId === item.runATransaction?.id;
+        case "run_b":
+          return item.winnerTransactionId === item.runBTransaction?.id;
+        case "tie":
+          return item.winnerTransactionId === "tie";
+        case "exclude":
+          return item.winnerTransactionId === "exclude";
+        case "pending":
+          return !item.winnerTransactionId;
+        default:
+          return true;
+      }
+    });
+  }, [comparison, winnerFilter]);
+
+  // Recompute grouped comparisons with filter applied
+  const { filteredExclusiveItems, filteredDifferentByType, filteredDifferenceGroups } = useMemo(() => {
+    if (!comparison) {
+      return {
+        filteredExclusiveItems: [],
+        filteredDifferentByType: new Map<string, TransactionComparison[]>(),
+        filteredDifferenceGroups: new Map<string, Map<string, DifferenceGroup>>(),
+      };
+    }
+
+    const exclusive = filteredComparisons.filter(
+      (c) => c.status === "only_a" || c.status === "only_b"
+    );
+    const different = filteredComparisons.filter((c) => c.status === "different");
+
+    // Group different by transaction type
+    const byType = new Map<string, TransactionComparison[]>();
+    const byTypeAndPattern = new Map<string, Map<string, DifferenceGroup>>();
+
+    for (const item of different) {
+      const type = item.runATransaction?.type || item.runBTransaction?.type || "unknown";
+      const pattern = getDifferencePattern(item);
+
+      if (!byType.has(type)) {
+        byType.set(type, []);
+        byTypeAndPattern.set(type, new Map());
+      }
+      byType.get(type)!.push(item);
+
+      const patternMap = byTypeAndPattern.get(type)!;
+      if (!patternMap.has(pattern)) {
+        const parts = pattern.split("|");
+        const onlyA = parts[0]?.replace("onlyA:", "").split(",").filter(Boolean) || [];
+        const onlyB = parts[1]?.replace("onlyB:", "").split(",").filter(Boolean) || [];
+
+        patternMap.set(pattern, {
+          pattern,
+          fieldsOnlyInA: onlyA,
+          fieldsOnlyInB: onlyB,
+          commonDifferences: [],
+          items: [],
+          hasNumericDifferences: false,
+          numericDiffFields: [],
+        });
+      }
+
+      const numericDiffs = getRealNumericDiffs(item);
+      if (numericDiffs.length > 0) {
+        const group = patternMap.get(pattern)!;
+        group.hasNumericDifferences = true;
+        for (const field of numericDiffs) {
+          if (!group.numericDiffFields.includes(field)) {
+            group.numericDiffFields.push(field);
+          }
+        }
+      }
+
+      patternMap.get(pattern)!.items.push(item);
+    }
+
+    return {
+      filteredExclusiveItems: exclusive,
+      filteredDifferentByType: byType,
+      filteredDifferenceGroups: byTypeAndPattern,
+    };
+  }, [filteredComparisons, comparison]);
 
   // Initialize from URL parameters and trigger comparison
   useEffect(() => {
@@ -1472,31 +1614,118 @@ function ComparePageContent() {
               </Card>
             </div>
 
-            {/* Progress of winners */}
+            {/* Winner Overview & Filters */}
             {(comparison.summary.different > 0 || comparison.summary.onlyA > 0 || comparison.summary.onlyB > 0) && (
-              <Card className="mb-8 border-orange-200 bg-orange-50">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between flex-wrap gap-4">
-                    <div className="flex items-center gap-2">
-                      <Trophy className="h-5 w-5 text-orange-600" />
-                      <span className="font-medium text-orange-800">
-                        Winners Designated: {comparison.summary.winnersDesignated} /{" "}
-                        {comparison.summary.different + comparison.summary.onlyA + comparison.summary.onlyB}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <span className="text-sm text-orange-600">
-                        Use bulk actions or individual buttons to mark correct extractions
+              <Card className="mb-8">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <Trophy className="h-5 w-5 text-yellow-600" />
+                      Winner Overview
+                    </CardTitle>
+                    <Button
+                      onClick={() => setSynthesizeDialogOpen(true)}
+                      className="gap-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                      Create Synthesized Run
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  {/* Winner Distribution */}
+                  <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
+                    <button
+                      onClick={() => setWinnerFilter(winnerFilter === "run_a" ? "all" : "run_a")}
+                      className={`p-3 rounded-lg border-2 transition-all text-left ${
+                        winnerFilter === "run_a"
+                          ? "border-blue-500 bg-blue-50"
+                          : "border-gray-200 hover:border-blue-300 hover:bg-blue-50/50"
+                      }`}
+                    >
+                      <div className="text-2xl font-bold text-blue-600">{winnerStats.runAWins}</div>
+                      <p className="text-xs text-gray-600">{runALabel} wins</p>
+                    </button>
+                    <button
+                      onClick={() => setWinnerFilter(winnerFilter === "run_b" ? "all" : "run_b")}
+                      className={`p-3 rounded-lg border-2 transition-all text-left ${
+                        winnerFilter === "run_b"
+                          ? "border-purple-500 bg-purple-50"
+                          : "border-gray-200 hover:border-purple-300 hover:bg-purple-50/50"
+                      }`}
+                    >
+                      <div className="text-2xl font-bold text-purple-600">{winnerStats.runBWins}</div>
+                      <p className="text-xs text-gray-600">{runBLabel} wins</p>
+                    </button>
+                    <button
+                      onClick={() => setWinnerFilter(winnerFilter === "tie" ? "all" : "tie")}
+                      className={`p-3 rounded-lg border-2 transition-all text-left ${
+                        winnerFilter === "tie"
+                          ? "border-gray-500 bg-gray-100"
+                          : "border-gray-200 hover:border-gray-400 hover:bg-gray-50"
+                      }`}
+                    >
+                      <div className="text-2xl font-bold text-gray-600">{winnerStats.ties}</div>
+                      <p className="text-xs text-gray-600">Ties</p>
+                    </button>
+                    <button
+                      onClick={() => setWinnerFilter(winnerFilter === "exclude" ? "all" : "exclude")}
+                      className={`p-3 rounded-lg border-2 transition-all text-left ${
+                        winnerFilter === "exclude"
+                          ? "border-red-500 bg-red-50"
+                          : "border-gray-200 hover:border-red-300 hover:bg-red-50/50"
+                      }`}
+                    >
+                      <div className="text-2xl font-bold text-red-600">{winnerStats.excluded}</div>
+                      <p className="text-xs text-gray-600">Excluded</p>
+                    </button>
+                    <button
+                      onClick={() => setWinnerFilter(winnerFilter === "pending" ? "all" : "pending")}
+                      className={`p-3 rounded-lg border-2 transition-all text-left ${
+                        winnerFilter === "pending"
+                          ? "border-orange-500 bg-orange-50"
+                          : "border-gray-200 hover:border-orange-300 hover:bg-orange-50/50"
+                      }`}
+                    >
+                      <div className="text-2xl font-bold text-orange-600">{winnerStats.pending}</div>
+                      <p className="text-xs text-gray-600">Pending</p>
+                    </button>
+                    <button
+                      onClick={() => setWinnerFilter("all")}
+                      className={`p-3 rounded-lg border-2 transition-all text-left ${
+                        winnerFilter === "all"
+                          ? "border-green-500 bg-green-50"
+                          : "border-gray-200 hover:border-green-300 hover:bg-green-50/50"
+                      }`}
+                    >
+                      <div className="text-2xl font-bold text-green-600">{winnerStats.total}</div>
+                      <p className="text-xs text-gray-600">Total</p>
+                    </button>
+                  </div>
+
+                  {/* Filter indicator */}
+                  {winnerFilter !== "all" && (
+                    <div className="flex items-center gap-2 p-2 bg-gray-100 rounded-lg">
+                      <span className="text-sm text-gray-600">
+                        Showing only:{" "}
+                        <span className="font-medium">
+                          {winnerFilter === "run_a" && `${runALabel} wins`}
+                          {winnerFilter === "run_b" && `${runBLabel} wins`}
+                          {winnerFilter === "tie" && "Ties"}
+                          {winnerFilter === "exclude" && "Excluded"}
+                          {winnerFilter === "pending" && "Pending decisions"}
+                        </span>
                       </span>
                       <Button
-                        onClick={() => setSynthesizeDialogOpen(true)}
-                        className="gap-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => setWinnerFilter("all")}
                       >
-                        <Sparkles className="h-4 w-4" />
-                        Create Synthesized Run
+                        Clear filter
                       </Button>
                     </div>
-                  </div>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -1515,18 +1744,18 @@ function ComparePageContent() {
             </div>
 
             {/* SECTION: Different Transactions (grouped by type) */}
-            {differentByType.size > 0 && (
+            {filteredDifferentByType.size > 0 && (
               <div className="mb-8">
                 <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
                   <Layers className="h-5 w-5 text-yellow-600" />
-                  Different Transactions ({comparison.summary.different})
+                  Different Transactions ({winnerFilter === "all" ? comparison.summary.different : filteredDifferentByType.size > 0 ? Array.from(filteredDifferentByType.values()).reduce((sum, items) => sum + items.length, 0) : 0})
                 </h2>
                 <p className="text-sm text-gray-600 mb-4">
                   These transactions exist in both runs but have different values. Grouped by transaction type.
                 </p>
 
                 <div className="space-y-4">
-                  {Array.from(differentByType.entries()).map(([type, items]) => {
+                  {Array.from(filteredDifferentByType.entries()).map(([type, items]) => {
                     const resolvedCount = items.filter((i) => i.winnerTransactionId).length;
                     const typeKey = type;
 
@@ -1636,7 +1865,7 @@ function ComparePageContent() {
                             <CardContent className="pt-0 space-y-3">
                               {/* Show sub-groups by difference pattern if there are multiple patterns */}
                               {(() => {
-                                const patterns = differenceGroups.get(type);
+                                const patterns = filteredDifferenceGroups.get(type);
                                 if (!patterns || patterns.size <= 1) {
                                   // Single pattern or no pattern grouping - show items directly
                                   return items.map((item) => renderComparisonItem(item));
@@ -1845,29 +2074,29 @@ function ComparePageContent() {
             )}
 
             {/* SECTION: Exclusive Transactions */}
-            {exclusiveItems.length > 0 && (
+            {filteredExclusiveItems.length > 0 && (
               <div className="mb-8">
                 <Card className="border-blue-200 mb-4">
                   <CardHeader className="py-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <ArrowLeftRight className="h-5 w-5 text-blue-600" />
-                        <CardTitle className="text-lg">Exclusive Transactions ({exclusiveItems.length})</CardTitle>
+                        <CardTitle className="text-lg">Exclusive Transactions ({filteredExclusiveItems.length})</CardTitle>
                         <Badge variant="secondary" className="bg-blue-100 text-blue-800">
-                          {exclusiveItems.filter((i) => i.status === "only_a").length} only in {runALabel}
+                          {filteredExclusiveItems.filter((i) => i.status === "only_a").length} only in {runALabel}
                         </Badge>
                         <Badge variant="secondary" className="bg-purple-100 text-purple-800">
-                          {exclusiveItems.filter((i) => i.status === "only_b").length} only in {runBLabel}
+                          {filteredExclusiveItems.filter((i) => i.status === "only_b").length} only in {runBLabel}
                         </Badge>
                         <Badge
                           variant="secondary"
                           className={
-                            exclusiveItems.filter((i) => i.winnerTransactionId).length === exclusiveItems.length
+                            filteredExclusiveItems.filter((i) => i.winnerTransactionId).length === filteredExclusiveItems.length
                               ? "bg-green-100 text-green-800"
                               : "bg-gray-100 text-gray-600"
                           }
                         >
-                          {exclusiveItems.filter((i) => i.winnerTransactionId).length}/{exclusiveItems.length} resolved
+                          {filteredExclusiveItems.filter((i) => i.winnerTransactionId).length}/{filteredExclusiveItems.length} resolved
                         </Badge>
                       </div>
                       <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
@@ -1878,7 +2107,7 @@ function ComparePageContent() {
                           className="h-7 text-xs border-green-300 text-green-700 hover:bg-green-50"
                           onClick={() => {
                             // Auto-assign: set winner to whichever transaction exists
-                            const updates = exclusiveItems
+                            const updates = filteredExclusiveItems
                               .filter((item) => !item.winnerTransactionId)
                               .map((item) => ({
                                 emailId: item.emailId,
@@ -1923,7 +2152,7 @@ function ComparePageContent() {
                           size="sm"
                           variant="outline"
                           className="h-7 text-xs border-red-300 text-red-700 hover:bg-red-50"
-                          onClick={() => bulkDesignateWinner(exclusiveItems, "exclude")}
+                          onClick={() => bulkDesignateWinner(filteredExclusiveItems, "exclude")}
                           disabled={bulkLoading.has("exclusive")}
                         >
                           {bulkLoading.has("exclusive") ? (
@@ -1944,7 +2173,7 @@ function ComparePageContent() {
                 </p>
 
                 <div className="space-y-3">
-                  {exclusiveItems.map((item) => renderComparisonItem(item, true))}
+                  {filteredExclusiveItems.map((item) => renderComparisonItem(item, true))}
                 </div>
               </div>
             )}

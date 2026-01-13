@@ -1,0 +1,574 @@
+import { NextRequest, NextResponse } from "next/server";
+import { db, sql as queryClient } from "@/db";
+import { transactions, extractionRuns, emails } from "@/db/schema";
+import { eq, inArray, and, max, sql } from "drizzle-orm";
+import { randomUUID } from "crypto";
+
+// POST /api/runs/synthesize - Create a synthesized run
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { type, runAId, runBId, primaryRunId, name, description } = body;
+
+    if (!type) {
+      return NextResponse.json(
+        { error: "Synthesis type is required" },
+        { status: 400 }
+      );
+    }
+
+    if (type === "comparison_winners") {
+      return handleComparisonWinners({
+        runAId,
+        runBId,
+        primaryRunId,
+        name,
+        description,
+      });
+    }
+
+    if (type === "data_flatten") {
+      return handleDataFlatten({
+        sourceRunId: runAId,
+        name,
+        description,
+      });
+    }
+
+    return NextResponse.json(
+      { error: `Unknown synthesis type: ${type}` },
+      { status: 400 }
+    );
+  } catch (error) {
+    console.error("Synthesis error:", error);
+    return NextResponse.json(
+      { error: "Failed to create synthesized run" },
+      { status: 500 }
+    );
+  }
+}
+
+interface ComparisonWinnersParams {
+  runAId: string;
+  runBId: string;
+  primaryRunId: string;
+  name?: string;
+  description?: string;
+}
+
+async function handleComparisonWinners(params: ComparisonWinnersParams) {
+  const { runAId, runBId, primaryRunId, name, description } = params;
+
+  if (!runAId || !runBId || !primaryRunId) {
+    return NextResponse.json(
+      { error: "runAId, runBId, and primaryRunId are required for comparison_winners synthesis" },
+      { status: 400 }
+    );
+  }
+
+  if (primaryRunId !== runAId && primaryRunId !== runBId) {
+    return NextResponse.json(
+      { error: "primaryRunId must be either runAId or runBId" },
+      { status: 400 }
+    );
+  }
+
+  // Verify runs exist
+  const [runA, runB] = await Promise.all([
+    db.select().from(extractionRuns).where(eq(extractionRuns.id, runAId)).limit(1),
+    db.select().from(extractionRuns).where(eq(extractionRuns.id, runBId)).limit(1),
+  ]);
+
+  if (!runA[0] || !runB[0]) {
+    return NextResponse.json(
+      { error: "One or both source runs not found" },
+      { status: 404 }
+    );
+  }
+
+  // Both runs must be from the same email set
+  if (runA[0].setId !== runB[0].setId) {
+    return NextResponse.json(
+      { error: "Both runs must be from the same email set" },
+      { status: 400 }
+    );
+  }
+
+  const setId = runA[0].setId;
+  const primaryRun = primaryRunId === runAId ? runA[0] : runB[0];
+
+  // Get all transactions from both runs
+  const [transactionsA, transactionsB] = await Promise.all([
+    db.select().from(transactions).where(eq(transactions.extractionRunId, runAId)),
+    db.select().from(transactions).where(eq(transactions.extractionRunId, runBId)),
+  ]);
+
+  // Map transactions by source email ID
+  const byEmailA = new Map<string, typeof transactions.$inferSelect>();
+  const byEmailB = new Map<string, typeof transactions.$inferSelect>();
+
+  for (const t of transactionsA) {
+    if (t.sourceEmailId) {
+      byEmailA.set(t.sourceEmailId, t);
+    }
+  }
+  for (const t of transactionsB) {
+    if (t.sourceEmailId) {
+      byEmailB.set(t.sourceEmailId, t);
+    }
+  }
+
+  // Get all emails with their winner designations
+  const allEmailIds = new Set([...byEmailA.keys(), ...byEmailB.keys()]);
+  const emailList = await db
+    .select({
+      id: emails.id,
+      winnerTransactionId: emails.winnerTransactionId,
+    })
+    .from(emails)
+    .where(inArray(emails.id, Array.from(allEmailIds)));
+
+  const emailWinners = new Map(emailList.map((e) => [e.id, e.winnerTransactionId]));
+
+  // Get next version number for this set
+  const maxVersionResult = await db
+    .select({ maxVersion: max(extractionRuns.version) })
+    .from(extractionRuns)
+    .where(eq(extractionRuns.setId, setId));
+  const nextVersion = (maxVersionResult[0]?.maxVersion || 0) + 1;
+
+  // Create the synthesized run
+  const synthesizedRunId = randomUUID();
+  const synthesizedRunName = name || `Synthesized v${nextVersion} (${runA[0].version} vs ${runB[0].version} winners)`;
+
+  // Determine which transactions to include
+  const transactionsToCreate: Array<typeof transactions.$inferInsert> = [];
+  let transactionsFromA = 0;
+  let transactionsFromB = 0;
+  let transactionsTied = 0;
+  let transactionsNoWinner = 0;
+
+  for (const emailId of allEmailIds) {
+    const tA = byEmailA.get(emailId);
+    const tB = byEmailB.get(emailId);
+    const winner = emailWinners.get(emailId);
+
+    let sourceTransaction: typeof transactions.$inferSelect | null = null;
+    let reason = "";
+
+    if (winner === "tie") {
+      // Use primary run for ties
+      sourceTransaction = primaryRunId === runAId ? tA || null : tB || null;
+      reason = "tie";
+      transactionsTied++;
+    } else if (winner && tA && winner === tA.id) {
+      // Run A was designated winner
+      sourceTransaction = tA;
+      reason = "winner_a";
+      transactionsFromA++;
+    } else if (winner && tB && winner === tB.id) {
+      // Run B was designated winner
+      sourceTransaction = tB;
+      reason = "winner_b";
+      transactionsFromB++;
+    } else {
+      // No winner designated - use primary run
+      sourceTransaction = primaryRunId === runAId ? tA || null : tB || null;
+      reason = "no_winner";
+      transactionsNoWinner++;
+    }
+
+    if (sourceTransaction) {
+      // Create a copy of the transaction for the synthesized run
+      const newTransactionId = randomUUID();
+      transactionsToCreate.push({
+        id: newTransactionId,
+        type: sourceTransaction.type,
+        accountId: sourceTransaction.accountId,
+        toAccountId: sourceTransaction.toAccountId,
+        date: sourceTransaction.date,
+        amount: sourceTransaction.amount,
+        currency: sourceTransaction.currency,
+        description: sourceTransaction.description,
+        symbol: sourceTransaction.symbol,
+        category: sourceTransaction.category,
+        quantity: sourceTransaction.quantity,
+        quantityExecuted: sourceTransaction.quantityExecuted,
+        quantityRemaining: sourceTransaction.quantityRemaining,
+        price: sourceTransaction.price,
+        executionPrice: sourceTransaction.executionPrice,
+        priceType: sourceTransaction.priceType,
+        limitPrice: sourceTransaction.limitPrice,
+        fees: sourceTransaction.fees,
+        contractSize: sourceTransaction.contractSize,
+        optionType: sourceTransaction.optionType,
+        strikePrice: sourceTransaction.strikePrice,
+        expirationDate: sourceTransaction.expirationDate,
+        optionAction: sourceTransaction.optionAction,
+        securityName: sourceTransaction.securityName,
+        grantNumber: sourceTransaction.grantNumber,
+        vestDate: sourceTransaction.vestDate,
+        orderId: sourceTransaction.orderId,
+        orderType: sourceTransaction.orderType,
+        orderQuantity: sourceTransaction.orderQuantity,
+        orderPrice: sourceTransaction.orderPrice,
+        orderStatus: sourceTransaction.orderStatus,
+        timeInForce: sourceTransaction.timeInForce,
+        referenceNumber: sourceTransaction.referenceNumber,
+        partiallyExecuted: sourceTransaction.partiallyExecuted,
+        executionTime: sourceTransaction.executionTime,
+        data: sourceTransaction.data,
+        unclassifiedData: sourceTransaction.unclassifiedData,
+        sourceEmailId: sourceTransaction.sourceEmailId,
+        extractionRunId: synthesizedRunId,
+        runCompleted: true,
+        confidence: sourceTransaction.confidence,
+        llmModel: sourceTransaction.llmModel,
+        sourceTransactionId: sourceTransaction.id, // Track provenance
+      });
+    }
+  }
+
+  // Insert the synthesized run
+  await db.insert(extractionRuns).values({
+    id: synthesizedRunId,
+    setId,
+    version: nextVersion,
+    name: synthesizedRunName,
+    description: description || `Synthesized from runs v${runA[0].version} and v${runB[0].version}. Primary fallback: v${primaryRun.version}`,
+    modelId: primaryRun.modelId, // Use primary run's model
+    promptId: primaryRun.promptId, // Use primary run's prompt
+    softwareVersion: primaryRun.softwareVersion,
+    emailsProcessed: allEmailIds.size,
+    transactionsCreated: transactionsToCreate.length,
+    informationalCount: 0,
+    errorCount: 0,
+    config: {
+      sourceRunA: runAId,
+      sourceRunB: runBId,
+      primaryRunId,
+      synthesisStats: {
+        fromA: transactionsFromA,
+        fromB: transactionsFromB,
+        ties: transactionsTied,
+        noWinner: transactionsNoWinner,
+      },
+    },
+    stats: {
+      byType: {},
+      avgConfidence: 0,
+      processingTimeMs: 0,
+    },
+    status: "completed",
+    startedAt: new Date(),
+    completedAt: new Date(),
+    isSynthesized: true,
+    synthesisType: "comparison_winners",
+    sourceRunIds: [runAId, runBId],
+    // primaryRunId is stored in config, not as a separate column
+  });
+
+  // Insert all transactions in batches
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < transactionsToCreate.length; i += BATCH_SIZE) {
+    const batch = transactionsToCreate.slice(i, i + BATCH_SIZE);
+    await db.insert(transactions).values(batch);
+  }
+
+  // Calculate stats by type
+  const byType: Record<string, number> = {};
+  for (const t of transactionsToCreate) {
+    byType[t.type] = (byType[t.type] || 0) + 1;
+  }
+
+  // Update run with stats
+  await db
+    .update(extractionRuns)
+    .set({
+      stats: {
+        byType,
+        avgConfidence: 0, // Could calculate this
+        processingTimeMs: 0,
+      },
+    })
+    .where(eq(extractionRuns.id, synthesizedRunId));
+
+  return NextResponse.json({
+    message: "Synthesized run created",
+    run: {
+      id: synthesizedRunId,
+      name: synthesizedRunName,
+      version: nextVersion,
+      transactionsCreated: transactionsToCreate.length,
+      stats: {
+        fromRunA: transactionsFromA,
+        fromRunB: transactionsFromB,
+        ties: transactionsTied,
+        noWinner: transactionsNoWinner,
+      },
+    },
+  });
+}
+
+interface DataFlattenParams {
+  sourceRunId: string;
+  name?: string;
+  description?: string;
+}
+
+// Convert camelCase or any string to snake_case for PostgreSQL column names
+function toSnakeCase(str: string): string {
+  return str
+    .replace(/([A-Z])/g, "_$1")
+    .toLowerCase()
+    .replace(/^_/, "")
+    .replace(/[^a-z0-9_]/g, "_")
+    .replace(/_+/g, "_")
+    .substring(0, 63); // PostgreSQL column name limit
+}
+
+async function handleDataFlatten(params: DataFlattenParams) {
+  const { sourceRunId, name, description } = params;
+
+  if (!sourceRunId) {
+    return NextResponse.json(
+      { error: "sourceRunId is required for data_flatten synthesis" },
+      { status: 400 }
+    );
+  }
+
+  // Get source run
+  const [sourceRun] = await db
+    .select()
+    .from(extractionRuns)
+    .where(eq(extractionRuns.id, sourceRunId))
+    .limit(1);
+
+  if (!sourceRun) {
+    return NextResponse.json(
+      { error: "Source run not found" },
+      { status: 404 }
+    );
+  }
+
+  // Get all transactions from source run
+  const sourceTransactions = await db
+    .select()
+    .from(transactions)
+    .where(eq(transactions.extractionRunId, sourceRunId));
+
+  // Helper to flatten data - extracts {key, value} objects from numeric indices
+  const flattenData = (data: Record<string, unknown>): Record<string, unknown> => {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (/^\d+$/.test(k) && v && typeof v === "object" && "key" in v && "value" in v) {
+        const obj = v as { key: string; value: unknown };
+        result[obj.key] = obj.value;
+      } else if (/^\d+$/.test(k) && v && typeof v === "object") {
+        continue;
+      } else {
+        result[k] = v;
+      }
+    }
+    return result;
+  };
+
+  // Step 1: Discover all unique keys in data fields
+  const allKeys = new Set<string>();
+  const flattenedDataByTxn = new Map<string, Record<string, unknown>>();
+
+  for (const t of sourceTransactions) {
+    const flattenedData = t.data ? flattenData(t.data as Record<string, unknown>) : {};
+    flattenedDataByTxn.set(t.id, flattenedData);
+    for (const key of Object.keys(flattenedData)) {
+      allKeys.add(key);
+    }
+  }
+
+  if (allKeys.size === 0) {
+    return NextResponse.json(
+      { error: "No data fields found to flatten" },
+      { status: 400 }
+    );
+  }
+
+  // Step 2: Get existing columns in transactions table
+  const existingColumnsResult = await queryClient<{ column_name: string }[]>`
+    SELECT column_name FROM information_schema.columns WHERE table_name = 'transactions'
+  `;
+  const existingColumns = new Set(existingColumnsResult.map((r) => r.column_name));
+
+  // Step 3: Determine which columns need to be created
+  const keyToColumn = new Map<string, string>();
+  const columnsToCreate: string[] = [];
+
+  for (const key of allKeys) {
+    const columnName = toSnakeCase(key);
+    keyToColumn.set(key, columnName);
+
+    if (!existingColumns.has(columnName)) {
+      columnsToCreate.push(columnName);
+    }
+  }
+
+  // Step 4: Create new columns (all as TEXT for flexibility)
+  for (const columnName of columnsToCreate) {
+    // Use raw query for DDL - column names are sanitized by toSnakeCase
+    await queryClient.unsafe(
+      `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "${columnName}" TEXT`
+    );
+  }
+
+  // Step 5: Get next version number and create synthesized run
+  const maxVersionResult = await db
+    .select({ maxVersion: max(extractionRuns.version) })
+    .from(extractionRuns)
+    .where(eq(extractionRuns.setId, sourceRun.setId));
+  const nextVersion = (maxVersionResult[0]?.maxVersion || 0) + 1;
+
+  const synthesizedRunId = randomUUID();
+  const synthesizedRunName = name || `Flattened v${nextVersion} (from v${sourceRun.version})`;
+
+  await db.insert(extractionRuns).values({
+    id: synthesizedRunId,
+    setId: sourceRun.setId,
+    version: nextVersion,
+    name: synthesizedRunName,
+    description: description || `Data flattened from run v${sourceRun.version}. Created ${columnsToCreate.length} new columns: ${columnsToCreate.join(", ")}`,
+    modelId: sourceRun.modelId,
+    promptId: sourceRun.promptId,
+    softwareVersion: sourceRun.softwareVersion,
+    emailsProcessed: sourceRun.emailsProcessed,
+    transactionsCreated: sourceTransactions.length,
+    informationalCount: 0,
+    errorCount: 0,
+    config: {
+      flattenedKeys: Array.from(allKeys),
+      columnsCreated: columnsToCreate,
+      keyToColumnMapping: Object.fromEntries(keyToColumn),
+    },
+    status: "completed",
+    startedAt: new Date(),
+    completedAt: new Date(),
+    isSynthesized: true,
+    synthesisType: "data_flatten",
+    sourceRunIds: [sourceRunId],
+  });
+
+  // Step 6: Insert transactions with flattened data in proper columns using raw SQL
+  // Build column list for INSERT
+  const baseColumns = [
+    "id", "type", "account_id", "to_account_id", "date", "amount", "currency",
+    "description", "symbol", "category", "quantity", "quantity_executed",
+    "quantity_remaining", "price", "execution_price", "price_type", "limit_price",
+    "fees", "contract_size", "option_type", "strike_price", "expiration_date",
+    "option_action", "security_name", "grant_number", "vest_date", "order_id",
+    "order_type", "order_quantity", "order_price", "order_status", "time_in_force",
+    "reference_number", "partially_executed", "execution_time", "data",
+    "unclassified_data", "source_email_id", "extraction_run_id", "run_completed",
+    "confidence", "llm_model", "source_transaction_id", "created_at"
+  ];
+
+  // Add dynamic columns
+  const dynamicColumns = Array.from(keyToColumn.values());
+  const allColumns = [...baseColumns, ...dynamicColumns];
+
+  // Insert transactions in batches
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < sourceTransactions.length; i += BATCH_SIZE) {
+    const batch = sourceTransactions.slice(i, i + BATCH_SIZE);
+
+    const values = batch.map((t) => {
+      const flatData = flattenedDataByTxn.get(t.id) || {};
+      const newId = randomUUID();
+
+      // Base values
+      const baseValues: (string | number | boolean | null | Date | Record<string, unknown>)[] = [
+        newId,
+        t.type,
+        t.accountId,
+        t.toAccountId,
+        t.date,
+        t.amount,
+        t.currency,
+        t.description,
+        t.symbol,
+        t.category,
+        t.quantity,
+        t.quantityExecuted,
+        t.quantityRemaining,
+        t.price,
+        t.executionPrice,
+        t.priceType,
+        t.limitPrice,
+        t.fees,
+        t.contractSize,
+        t.optionType,
+        t.strikePrice,
+        t.expirationDate,
+        t.optionAction,
+        t.securityName,
+        t.grantNumber,
+        t.vestDate,
+        t.orderId,
+        t.orderType,
+        t.orderQuantity,
+        t.orderPrice,
+        t.orderStatus,
+        t.timeInForce,
+        t.referenceNumber,
+        t.partiallyExecuted,
+        t.executionTime,
+        {}, // data - empty since we're flattening to columns
+        t.unclassifiedData,
+        t.sourceEmailId,
+        synthesizedRunId,
+        true, // run_completed
+        t.confidence,
+        t.llmModel,
+        t.id, // source_transaction_id
+        new Date(),
+      ];
+
+      // Add dynamic column values
+      for (const key of allKeys) {
+        const value = flatData[key];
+        baseValues.push(value !== undefined ? String(value) : null);
+      }
+
+      return baseValues;
+    });
+
+    // Use postgres.js insert syntax for better handling
+    const columnList = allColumns.map(c => `"${c}"`).join(", ");
+
+    // Insert each row individually to handle complex value types
+    for (const rowValues of values) {
+      const placeholders = rowValues.map((_, i) => `$${i + 1}`).join(", ");
+      const query = `INSERT INTO transactions (${columnList}) VALUES (${placeholders})`;
+
+      // Convert values to appropriate types for postgres
+      const pgValues = rowValues.map(v => {
+        if (v === null || v === undefined) return null;
+        if (v instanceof Date) return v.toISOString();
+        if (typeof v === "object") return JSON.stringify(v);
+        return v;
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await queryClient.unsafe(query, pgValues as any);
+    }
+  }
+
+  return NextResponse.json({
+    message: "Flattened run created with new columns",
+    run: {
+      id: synthesizedRunId,
+      name: synthesizedRunName,
+      version: nextVersion,
+      transactionsCreated: sourceTransactions.length,
+      columnsCreated: columnsToCreate,
+      totalFlattenedKeys: allKeys.size,
+    },
+  });
+}

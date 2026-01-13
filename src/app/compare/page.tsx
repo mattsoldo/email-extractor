@@ -21,6 +21,16 @@ import {
 } from "@/components/ui/collapsible";
 import { format } from "date-fns";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
   RefreshCw,
   CheckCircle2,
   AlertTriangle,
@@ -35,8 +45,10 @@ import {
   Equal,
   Layers,
   ExternalLink,
+  Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useRouter } from "next/navigation";
 
 interface ExtractionRun {
   id: string;
@@ -118,6 +130,7 @@ interface EmailContent {
 
 function ComparePageContent() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const [runs, setRuns] = useState<ExtractionRun[]>([]);
   const [runAId, setRunAId] = useState<string>("");
   const [runBId, setRunBId] = useState<string>("");
@@ -130,6 +143,12 @@ function ComparePageContent() {
   const [emailContents, setEmailContents] = useState<Map<string, EmailContent>>(new Map());
   const [loadingEmails, setLoadingEmails] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState<Set<string>>(new Set());
+
+  // Synthesis dialog state
+  const [synthesizeDialogOpen, setSynthesizeDialogOpen] = useState(false);
+  const [synthesizePrimaryRun, setSynthesizePrimaryRun] = useState<"a" | "b">("a");
+  const [synthesizeName, setSynthesizeName] = useState("");
+  const [synthesizing, setSynthesizing] = useState(false);
 
   const fetchRuns = useCallback(async () => {
     try {
@@ -145,10 +164,56 @@ function ComparePageContent() {
     fetchRuns();
   }, [fetchRuns]);
 
+  // Helper to get difference pattern key (which fields are only in A vs only in B)
+  const getDifferencePattern = (item: TransactionComparison): string => {
+    const dataA = (item.runATransaction?.data || {}) as Record<string, unknown>;
+    const dataB = (item.runBTransaction?.data || {}) as Record<string, unknown>;
+
+    // Flatten data to get actual keys
+    const flattenData = (data: Record<string, unknown>): Set<string> => {
+      const keys = new Set<string>();
+      for (const [k, v] of Object.entries(data)) {
+        if (/^\d+$/.test(k) && v && typeof v === "object" && "key" in v && "value" in v) {
+          keys.add((v as { key: string }).key);
+        } else if (!/^\d+$/.test(k)) {
+          keys.add(k);
+        }
+      }
+      return keys;
+    };
+
+    const keysA = flattenData(dataA);
+    const keysB = flattenData(dataB);
+
+    // Find keys only in A or only in B
+    const onlyInA = [...keysA].filter((k) => !keysB.has(k)).sort();
+    const onlyInB = [...keysB].filter((k) => !keysA.has(k)).sort();
+
+    // Also include regular field differences
+    const fieldDiffs = item.differences
+      .filter((d) => !d.startsWith("data."))
+      .sort();
+
+    return `fields:${fieldDiffs.join(",")}|onlyA:${onlyInA.join(",")}|onlyB:${onlyInB.join(",")}`;
+  };
+
+  // Interface for grouped differences
+  interface DifferenceGroup {
+    pattern: string;
+    fieldsOnlyInA: string[];
+    fieldsOnlyInB: string[];
+    commonDifferences: string[];
+    items: TransactionComparison[];
+  }
+
   // Compute grouped comparisons
-  const { exclusiveItems, differentByType } = useMemo(() => {
+  const { exclusiveItems, differentByType, differenceGroups } = useMemo(() => {
     if (!comparison) {
-      return { exclusiveItems: [], differentByType: new Map<string, TransactionComparison[]>() };
+      return {
+        exclusiveItems: [],
+        differentByType: new Map<string, TransactionComparison[]>(),
+        differenceGroups: new Map<string, Map<string, DifferenceGroup>>(),
+      };
     }
 
     const exclusive = comparison.comparisons.filter(
@@ -158,15 +223,39 @@ function ComparePageContent() {
 
     // Group different by transaction type
     const byType = new Map<string, TransactionComparison[]>();
+    // Also group by pattern within each type
+    const byTypeAndPattern = new Map<string, Map<string, DifferenceGroup>>();
+
     for (const item of different) {
       const type = item.runATransaction?.type || item.runBTransaction?.type || "unknown";
+      const pattern = getDifferencePattern(item);
+
       if (!byType.has(type)) {
         byType.set(type, []);
+        byTypeAndPattern.set(type, new Map());
       }
       byType.get(type)!.push(item);
+
+      const patternMap = byTypeAndPattern.get(type)!;
+      if (!patternMap.has(pattern)) {
+        // Parse the pattern to extract readable info
+        const parts = pattern.split("|");
+        const fieldDiffs = parts[0]?.replace("fields:", "").split(",").filter(Boolean) || [];
+        const onlyA = parts[1]?.replace("onlyA:", "").split(",").filter(Boolean) || [];
+        const onlyB = parts[2]?.replace("onlyB:", "").split(",").filter(Boolean) || [];
+
+        patternMap.set(pattern, {
+          pattern,
+          fieldsOnlyInA: onlyA,
+          fieldsOnlyInB: onlyB,
+          commonDifferences: fieldDiffs,
+          items: [],
+        });
+      }
+      patternMap.get(pattern)!.items.push(item);
     }
 
-    return { exclusiveItems: exclusive, differentByType: byType };
+    return { exclusiveItems: exclusive, differentByType: byType, differenceGroups: byTypeAndPattern };
   }, [comparison]);
 
   // Initialize from URL parameters and trigger comparison
@@ -301,6 +390,41 @@ function ComparePageContent() {
         next.delete(typeKey);
         return next;
       });
+    }
+  };
+
+  const createSynthesizedRun = async () => {
+    if (!comparison) return;
+
+    setSynthesizing(true);
+    try {
+      const res = await fetch("/api/runs/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "comparison_winners",
+          runAId,
+          runBId,
+          primaryRunId: synthesizePrimaryRun === "a" ? runAId : runBId,
+          name: synthesizeName || undefined,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(`Created synthesized run: ${data.run.name}`);
+        setSynthesizeDialogOpen(false);
+        setSynthesizeName("");
+        // Navigate to the new run
+        router.push(`/runs/${data.run.id}`);
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to create synthesized run");
+      }
+    } catch (error) {
+      toast.error("Failed to create synthesized run");
+    } finally {
+      setSynthesizing(false);
     }
   };
 
@@ -1037,7 +1161,7 @@ function ComparePageContent() {
             {(comparison.summary.different > 0 || comparison.summary.onlyA > 0 || comparison.summary.onlyB > 0) && (
               <Card className="mb-8 border-orange-200 bg-orange-50">
                 <CardContent className="pt-6">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between flex-wrap gap-4">
                     <div className="flex items-center gap-2">
                       <Trophy className="h-5 w-5 text-orange-600" />
                       <span className="font-medium text-orange-800">
@@ -1045,8 +1169,17 @@ function ComparePageContent() {
                         {comparison.summary.different + comparison.summary.onlyA + comparison.summary.onlyB}
                       </span>
                     </div>
-                    <div className="text-sm text-orange-600">
-                      Use bulk actions or individual buttons to mark correct extractions
+                    <div className="flex items-center gap-4">
+                      <span className="text-sm text-orange-600">
+                        Use bulk actions or individual buttons to mark correct extractions
+                      </span>
+                      <Button
+                        onClick={() => setSynthesizeDialogOpen(true)}
+                        className="gap-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                      >
+                        <Sparkles className="h-4 w-4" />
+                        Create Synthesized Run
+                      </Button>
                     </div>
                   </div>
                 </CardContent>
@@ -1170,7 +1303,102 @@ function ComparePageContent() {
                           </CollapsibleTrigger>
                           <CollapsibleContent>
                             <CardContent className="pt-0 space-y-3">
-                              {items.map((item) => renderComparisonItem(item))}
+                              {/* Show sub-groups by difference pattern if there are multiple patterns */}
+                              {(() => {
+                                const patterns = differenceGroups.get(type);
+                                if (!patterns || patterns.size <= 1) {
+                                  // Single pattern or no pattern grouping - show items directly
+                                  return items.map((item) => renderComparisonItem(item));
+                                }
+
+                                // Multiple patterns - show as sub-groups
+                                return Array.from(patterns.values()).map((group, groupIdx) => {
+                                  const groupKey = `${type}-pattern-${groupIdx}`;
+                                  const groupResolved = group.items.filter((i) => i.winnerTransactionId).length;
+                                  const hasFieldDiffs = group.fieldsOnlyInA.length > 0 || group.fieldsOnlyInB.length > 0;
+
+                                  return (
+                                    <div key={groupKey} className="border rounded-lg bg-yellow-50/50 p-3 space-y-3">
+                                      {/* Pattern description */}
+                                      <div className="flex items-center justify-between flex-wrap gap-2">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          <Badge variant="outline" className="bg-white">
+                                            {group.items.length} items
+                                          </Badge>
+                                          <Badge
+                                            variant="secondary"
+                                            className={
+                                              groupResolved === group.items.length
+                                                ? "bg-green-100 text-green-800"
+                                                : "bg-gray-100 text-gray-600"
+                                            }
+                                          >
+                                            {groupResolved}/{group.items.length} resolved
+                                          </Badge>
+                                          {group.fieldsOnlyInA.length > 0 && (
+                                            <span className="text-xs text-blue-700">
+                                              Only in {runALabel}: {group.fieldsOnlyInA.join(", ")}
+                                            </span>
+                                          )}
+                                          {group.fieldsOnlyInB.length > 0 && (
+                                            <span className="text-xs text-purple-700">
+                                              Only in {runBLabel}: {group.fieldsOnlyInB.join(", ")}
+                                            </span>
+                                          )}
+                                          {group.commonDifferences.length > 0 && !hasFieldDiffs && (
+                                            <span className="text-xs text-gray-600">
+                                              Differs: {group.commonDifferences.join(", ")}
+                                            </span>
+                                          )}
+                                        </div>
+                                        {/* Bulk actions for this pattern group */}
+                                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                                          <span className="text-xs text-gray-500 mr-1">Set group:</span>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="h-6 text-xs px-2 border-blue-300 text-blue-700 hover:bg-blue-50"
+                                            onClick={() => bulkDesignateWinner(group.items, "a")}
+                                            disabled={bulkLoading.has(groupKey)}
+                                          >
+                                            {bulkLoading.has(groupKey) ? (
+                                              <Loader2 className="h-3 w-3 animate-spin" />
+                                            ) : (
+                                              <>{runALabel}</>
+                                            )}
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="h-6 text-xs px-2 border-purple-300 text-purple-700 hover:bg-purple-50"
+                                            onClick={() => bulkDesignateWinner(group.items, "b")}
+                                            disabled={bulkLoading.has(groupKey)}
+                                          >
+                                            {bulkLoading.has(groupKey) ? (
+                                              <Loader2 className="h-3 w-3 animate-spin" />
+                                            ) : (
+                                              <>{runBLabel}</>
+                                            )}
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="h-6 text-xs px-2 border-gray-300 text-gray-700 hover:bg-gray-50"
+                                            onClick={() => bulkDesignateWinner(group.items, "tie")}
+                                            disabled={bulkLoading.has(groupKey)}
+                                          >
+                                            Tie
+                                          </Button>
+                                        </div>
+                                      </div>
+                                      {/* Items in this pattern group */}
+                                      <div className="space-y-2">
+                                        {group.items.map((item) => renderComparisonItem(item))}
+                                      </div>
+                                    </div>
+                                  );
+                                });
+                              })()}
                             </CardContent>
                           </CollapsibleContent>
                         </Collapsible>
@@ -1234,6 +1462,112 @@ function ComparePageContent() {
             </CardContent>
           </Card>
         )}
+
+        {/* Synthesize Dialog */}
+        <Dialog open={synthesizeDialogOpen} onOpenChange={setSynthesizeDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-purple-600" />
+                Create Synthesized Run
+              </DialogTitle>
+              <DialogDescription>
+                Create a new extraction run from the designated winners. For ties and
+                unresolved comparisons, the primary run will be used as fallback.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label>Primary Run (fallback for ties/unresolved)</Label>
+                <div className="flex flex-col gap-2">
+                  <Button
+                    type="button"
+                    variant={synthesizePrimaryRun === "a" ? "default" : "outline"}
+                    className={`justify-start ${
+                      synthesizePrimaryRun === "a"
+                        ? "bg-blue-600 hover:bg-blue-700"
+                        : "border-blue-300 text-blue-700 hover:bg-blue-50"
+                    }`}
+                    onClick={() => setSynthesizePrimaryRun("a")}
+                  >
+                    <CheckCircle2 className={`h-4 w-4 mr-2 ${synthesizePrimaryRun === "a" ? "opacity-100" : "opacity-0"}`} />
+                    <span>{runALabel}</span>
+                    <span className="ml-2 text-xs opacity-75">
+                      ({comparison?.runA.transactionsCreated} transactions)
+                    </span>
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={synthesizePrimaryRun === "b" ? "default" : "outline"}
+                    className={`justify-start ${
+                      synthesizePrimaryRun === "b"
+                        ? "bg-purple-600 hover:bg-purple-700"
+                        : "border-purple-300 text-purple-700 hover:bg-purple-50"
+                    }`}
+                    onClick={() => setSynthesizePrimaryRun("b")}
+                  >
+                    <CheckCircle2 className={`h-4 w-4 mr-2 ${synthesizePrimaryRun === "b" ? "opacity-100" : "opacity-0"}`} />
+                    <span>{runBLabel}</span>
+                    <span className="ml-2 text-xs opacity-75">
+                      ({comparison?.runB.transactionsCreated} transactions)
+                    </span>
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="synth-name">Run Name (optional)</Label>
+                <Input
+                  id="synth-name"
+                  placeholder="e.g., Best of Claude vs GPT"
+                  value={synthesizeName}
+                  onChange={(e) => setSynthesizeName(e.target.value)}
+                />
+              </div>
+
+              {comparison && (
+                <div className="rounded-lg border p-3 bg-gray-50 text-sm space-y-1">
+                  <p className="font-medium text-gray-700">Summary:</p>
+                  <p className="text-gray-600">
+                    {comparison.summary.winnersDesignated} winners designated,{" "}
+                    {comparison.summary.different + comparison.summary.onlyA + comparison.summary.onlyB - comparison.summary.winnersDesignated} using fallback
+                  </p>
+                  <p className="text-gray-600">
+                    {comparison.summary.matches} matching transactions will be included
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setSynthesizeDialogOpen(false)}
+                disabled={synthesizing}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={createSynthesizedRun}
+                disabled={synthesizing}
+                className="gap-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+              >
+                {synthesizing ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4" />
+                    Create Run
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );

@@ -224,6 +224,7 @@ export const transactions = pgTable("transactions", {
   runCompleted: boolean("run_completed").default(false), // True when the extraction run fully completed
   confidence: decimal("confidence", { precision: 3, scale: 2 }), // AI confidence
   llmModel: text("llm_model"), // Which LLM model extracted this
+  sourceTransactionId: text("source_transaction_id"), // For synthesized runs, the original transaction this was copied from
 
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow(),
@@ -326,6 +327,12 @@ export const extractionRuns = pgTable("extraction_runs", {
   startedAt: timestamp("started_at").defaultNow().notNull(),
   completedAt: timestamp("completed_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+
+  // Synthesized run fields
+  isSynthesized: boolean("is_synthesized").default(false),
+  synthesisType: text("synthesis_type"), // 'comparison_winners', 'data_flatten'
+  sourceRunIds: jsonb("source_run_ids").$type<string[]>().default([]), // Array of run IDs this was synthesized from
+  // Note: primaryRunId is stored in config JSON, not as a column (it's always in sourceRunIds)
 });
 
 // Email Extractions - tracks each extraction attempt for each email

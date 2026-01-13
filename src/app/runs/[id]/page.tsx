@@ -27,8 +27,10 @@ import {
   ExternalLink,
   MessageCircle,
   StopCircle,
+  Sparkles,
 } from "lucide-react";
 import Link from "next/link";
+import { toast } from "sonner";
 
 interface ExtractionRun {
   id: string;
@@ -80,6 +82,7 @@ export default function RunDetailPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
+  const [flattening, setFlattening] = useState(false);
 
   const handleCancel = async () => {
     if (!run || cancelling) return;
@@ -98,6 +101,37 @@ export default function RunDetailPage() {
       alert(error instanceof Error ? error.message : "Failed to cancel run");
     } finally {
       setCancelling(false);
+    }
+  };
+
+  const handleFlattenData = async () => {
+    if (!run || flattening) return;
+
+    setFlattening(true);
+    try {
+      const res = await fetch("/api/runs/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "data_flatten",
+          runAId: runId,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to flatten data");
+      }
+
+      const data = await res.json();
+      toast.success(`Created flattened run: ${data.run.name}`);
+      // Navigate to the new run
+      router.push(`/runs/${data.run.id}`);
+    } catch (error) {
+      console.error("Failed to flatten data:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to flatten data");
+    } finally {
+      setFlattening(false);
     }
   };
 
@@ -268,6 +302,22 @@ export default function RunDetailPage() {
                   View Job
                 </Button>
               </Link>
+            )}
+            {run.status === "completed" && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2 border-purple-300 text-purple-700 hover:bg-purple-50"
+                onClick={handleFlattenData}
+                disabled={flattening}
+              >
+                {flattening ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
+                Flatten Data
+              </Button>
             )}
           </div>
         </div>

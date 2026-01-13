@@ -196,6 +196,13 @@ function ComparePageContent() {
     return `onlyA:${onlyInA.join(",")}|onlyB:${onlyInB.join(",")}`;
   };
 
+  // Numeric fields that are important to highlight
+  const NUMERIC_FIELDS = new Set([
+    "amount", "quantity", "quantityExecuted", "quantityRemaining",
+    "price", "executionPrice", "limitPrice", "fees",
+    "orderQuantity", "orderPrice", "contractSize"
+  ]);
+
   // Interface for grouped differences
   interface DifferenceGroup {
     pattern: string;
@@ -203,6 +210,8 @@ function ComparePageContent() {
     fieldsOnlyInB: string[];
     commonDifferences: string[];
     items: TransactionComparison[];
+    hasNumericDifferences: boolean;
+    numericDiffFields: string[];
   }
 
   // Compute grouped comparisons
@@ -247,10 +256,26 @@ function ComparePageContent() {
           pattern,
           fieldsOnlyInA: onlyA,
           fieldsOnlyInB: onlyB,
-          commonDifferences: [], // We no longer track standard field diffs in pattern
+          commonDifferences: [],
           items: [],
+          hasNumericDifferences: false,
+          numericDiffFields: [],
         });
       }
+
+      // Check if this item has numeric field differences
+      const numericDiffs = item.differences.filter(d => NUMERIC_FIELDS.has(d));
+      if (numericDiffs.length > 0) {
+        const group = patternMap.get(pattern)!;
+        group.hasNumericDifferences = true;
+        // Add any new numeric diff fields we haven't seen yet
+        for (const field of numericDiffs) {
+          if (!group.numericDiffFields.includes(field)) {
+            group.numericDiffFields.push(field);
+          }
+        }
+      }
+
       patternMap.get(pattern)!.items.push(item);
     }
 
@@ -1325,29 +1350,67 @@ function ComparePageContent() {
                                   return items.map((item) => renderComparisonItem(item));
                                 }
 
-                                // Multiple patterns - show as sub-groups (collapsible)
-                                return Array.from(patterns.values()).map((group, groupIdx) => {
+                                // Sort groups: numeric differences first, then by item count
+                                const sortedGroups = Array.from(patterns.values()).sort((a, b) => {
+                                  // Numeric differences first
+                                  if (a.hasNumericDifferences && !b.hasNumericDifferences) return -1;
+                                  if (!a.hasNumericDifferences && b.hasNumericDifferences) return 1;
+                                  // Then by item count (larger groups first)
+                                  return b.items.length - a.items.length;
+                                });
+
+                                return sortedGroups.map((group, groupIdx) => {
                                   const groupKey = `${type}-pattern-${groupIdx}`;
                                   const groupResolved = group.items.filter((i) => i.winnerTransactionId).length;
                                   const hasFieldDiffs = group.fieldsOnlyInA.length > 0 || group.fieldsOnlyInB.length > 0;
                                   const isGroupExpanded = expandedPatternGroups.has(groupKey);
 
+                                  // Single-item groups: render directly without collapsible wrapper
+                                  if (group.items.length === 1) {
+                                    return (
+                                      <div key={groupKey}>
+                                        {group.hasNumericDifferences && (
+                                          <div className="flex items-center gap-2 mb-2 px-1">
+                                            <Badge className="bg-red-100 text-red-800 border-red-200">
+                                              ⚠️ {group.numericDiffFields.join(", ")} differs
+                                            </Badge>
+                                          </div>
+                                        )}
+                                        {renderComparisonItem(group.items[0])}
+                                      </div>
+                                    );
+                                  }
+
+                                  // Multi-item groups: render with collapsible wrapper
                                   return (
                                     <Collapsible
                                       key={groupKey}
                                       open={isGroupExpanded}
                                       onOpenChange={() => togglePatternGroupExpanded(groupKey)}
                                     >
-                                      <div className="border rounded-lg bg-yellow-50/50 overflow-hidden">
+                                      <div className={`border rounded-lg overflow-hidden ${
+                                        group.hasNumericDifferences
+                                          ? "bg-red-50/50 border-red-200"
+                                          : "bg-yellow-50/50"
+                                      }`}>
                                         {/* Pattern description - clickable header */}
                                         <CollapsibleTrigger asChild>
-                                          <div className="flex items-center justify-between flex-wrap gap-2 p-3 cursor-pointer hover:bg-yellow-100/50 transition-colors">
+                                          <div className={`flex items-center justify-between flex-wrap gap-2 p-3 cursor-pointer transition-colors ${
+                                            group.hasNumericDifferences
+                                              ? "hover:bg-red-100/50"
+                                              : "hover:bg-yellow-100/50"
+                                          }`}>
                                             <div className="flex items-center gap-2 flex-wrap">
                                               <ChevronDown
                                                 className={`h-4 w-4 text-gray-400 transition-transform ${
                                                   isGroupExpanded ? "rotate-180" : ""
                                                 }`}
                                               />
+                                              {group.hasNumericDifferences && (
+                                                <Badge className="bg-red-100 text-red-800 border-red-200">
+                                                  ⚠️ {group.numericDiffFields.join(", ")} differs
+                                                </Badge>
+                                              )}
                                               <Badge variant="outline" className="bg-white">
                                                 {group.items.length} items
                                               </Badge>

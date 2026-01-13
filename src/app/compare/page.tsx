@@ -290,7 +290,7 @@ function ComparePageContent() {
     }
   }, [runs, searchParams, initialized]);
 
-  const fetchComparison = async () => {
+  const fetchComparison = async (preserveExpandedState = false) => {
     if (!runAId || !runBId) {
       toast.error("Please select both runs to compare");
       return;
@@ -306,8 +306,11 @@ function ComparePageContent() {
       const data = await res.json();
       if (res.ok) {
         setComparison(data);
-        // Start with all type groups collapsed
-        setExpandedTypes(new Set());
+        // Only reset expanded state when doing a fresh comparison, not on refresh
+        if (!preserveExpandedState) {
+          setExpandedTypes(new Set());
+          setExpandedPatternGroups(new Set());
+        }
       } else {
         toast.error(data.error || "Failed to compare runs");
       }
@@ -339,7 +342,7 @@ function ComparePageContent() {
             ? "Marked as tie"
             : "Winner set";
         toast.success(message);
-        fetchComparison();
+        fetchComparison(true); // Preserve expanded state
       } else {
         const data = await res.json();
         toast.error(data.error || "Failed to set winner");
@@ -376,7 +379,7 @@ function ComparePageContent() {
       if (res.ok) {
         const data = await res.json();
         toast.success(data.message);
-        fetchComparison();
+        fetchComparison(true); // Preserve expanded state
       } else {
         const data = await res.json();
         toast.error(data.error || "Failed to bulk set winners");
@@ -1121,7 +1124,7 @@ function ComparePageContent() {
                 </Select>
               </div>
 
-              <Button onClick={fetchComparison} disabled={loading || !runAId || !runBId} className="gap-2">
+              <Button onClick={() => fetchComparison()} disabled={loading || !runAId || !runBId} className="gap-2">
                 {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Scale className="h-4 w-4" />}
                 Compare Runs
               </Button>

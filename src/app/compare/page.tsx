@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, Suspense, useMemo } from "react";
+import { useEffect, useState, useCallback, Suspense, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Navigation } from "@/components/navigation";
@@ -162,6 +162,9 @@ function ComparePageContent() {
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState<string>("");
   const [savingOverride, setSavingOverride] = useState(false);
+
+  // Track which comparison we've auto-assigned exclusive winners for
+  const autoAssignedForRef = useRef<string | null>(null);
 
   const fetchRuns = useCallback(async () => {
     try {
@@ -348,6 +351,61 @@ function ComparePageContent() {
       }
     }
   }, [runs, searchParams, initialized]);
+
+  // Auto-assign winners for exclusive transactions when comparison loads
+  useEffect(() => {
+    if (!comparison || !runAId || !runBId) return;
+
+    // Create a unique key for this comparison
+    const comparisonKey = `${runAId}-${runBId}`;
+
+    // Skip if we've already auto-assigned for this comparison
+    if (autoAssignedForRef.current === comparisonKey) return;
+
+    // Find exclusive items without winners
+    const exclusiveWithoutWinners = comparison.comparisons.filter(
+      (c) =>
+        (c.status === "only_a" || c.status === "only_b") &&
+        !c.winnerTransactionId
+    );
+
+    if (exclusiveWithoutWinners.length === 0) {
+      // Mark as processed even if nothing to do
+      autoAssignedForRef.current = comparisonKey;
+      return;
+    }
+
+    // Mark as processed before making the API call
+    autoAssignedForRef.current = comparisonKey;
+
+    // Build updates to auto-assign winners
+    const updates = exclusiveWithoutWinners.map((item) => ({
+      emailId: item.emailId,
+      winnerTransactionId: item.runATransaction?.id || item.runBTransaction?.id || null,
+    }));
+
+    // Batch update
+    fetch("/api/compare", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates }),
+    })
+      .then((res) => {
+        if (res.ok) {
+          // Silently refresh to show updated winners
+          fetch(`/api/compare?runA=${runAId}&runB=${runBId}`)
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.comparisons) {
+                setComparison(data);
+              }
+            });
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to auto-assign exclusive winners:", err);
+      });
+  }, [comparison, runAId, runBId]);
 
   const fetchComparison = async (preserveExpandedState = false) => {
     if (!runAId || !runBId) {
@@ -1789,12 +1847,100 @@ function ComparePageContent() {
             {/* SECTION: Exclusive Transactions */}
             {exclusiveItems.length > 0 && (
               <div className="mb-8">
-                <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                  <ArrowLeftRight className="h-5 w-5 text-blue-600" />
-                  Exclusive Transactions ({exclusiveItems.length})
-                </h2>
+                <Card className="border-blue-200 mb-4">
+                  <CardHeader className="py-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <ArrowLeftRight className="h-5 w-5 text-blue-600" />
+                        <CardTitle className="text-lg">Exclusive Transactions ({exclusiveItems.length})</CardTitle>
+                        <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                          {exclusiveItems.filter((i) => i.status === "only_a").length} only in {runALabel}
+                        </Badge>
+                        <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+                          {exclusiveItems.filter((i) => i.status === "only_b").length} only in {runBLabel}
+                        </Badge>
+                        <Badge
+                          variant="secondary"
+                          className={
+                            exclusiveItems.filter((i) => i.winnerTransactionId).length === exclusiveItems.length
+                              ? "bg-green-100 text-green-800"
+                              : "bg-gray-100 text-gray-600"
+                          }
+                        >
+                          {exclusiveItems.filter((i) => i.winnerTransactionId).length}/{exclusiveItems.length} resolved
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                        <span className="text-xs text-gray-500 mr-2">Bulk:</span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs border-green-300 text-green-700 hover:bg-green-50"
+                          onClick={() => {
+                            // Auto-assign: set winner to whichever transaction exists
+                            const updates = exclusiveItems
+                              .filter((item) => !item.winnerTransactionId)
+                              .map((item) => ({
+                                emailId: item.emailId,
+                                winnerTransactionId: item.runATransaction?.id || item.runBTransaction?.id || null,
+                              }));
+                            if (updates.length > 0) {
+                              setBulkLoading((prev) => new Set(prev).add("exclusive"));
+                              fetch("/api/compare", {
+                                method: "PUT",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ updates }),
+                              })
+                                .then((res) => {
+                                  if (res.ok) {
+                                    toast.success(`Auto-assigned ${updates.length} winners`);
+                                    fetchComparison(true);
+                                  }
+                                })
+                                .finally(() => {
+                                  setBulkLoading((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete("exclusive");
+                                    return next;
+                                  });
+                                });
+                            } else {
+                              toast.info("All exclusive transactions already have winners");
+                            }
+                          }}
+                          disabled={bulkLoading.has("exclusive")}
+                        >
+                          {bulkLoading.has("exclusive") ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <>
+                              <Trophy className="h-3 w-3 mr-1" />
+                              Auto-assign Winners
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs border-red-300 text-red-700 hover:bg-red-50"
+                          onClick={() => bulkDesignateWinner(exclusiveItems, "exclude")}
+                          disabled={bulkLoading.has("exclusive")}
+                        >
+                          {bulkLoading.has("exclusive") ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <>
+                              <Ban className="h-3 w-3 mr-1" />
+                              Exclude All
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                </Card>
                 <p className="text-sm text-gray-600 mb-4">
-                  These transactions exist in only one run. Designate which run&apos;s extraction is correct.
+                  These transactions exist in only one run. Use &quot;Auto-assign Winners&quot; to accept all, or review individually.
                 </p>
 
                 <div className="space-y-3">

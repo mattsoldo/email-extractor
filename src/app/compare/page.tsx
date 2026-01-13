@@ -2298,6 +2298,18 @@ function ComparePageContent() {
                           <CardHeader className="py-3">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 w-6 p-0"
+                                  onClick={() => toggleEmailPreview(email.emailId)}
+                                >
+                                  {expandedEmailPreviews.has(email.emailId) ? (
+                                    <ChevronUp className="h-4 w-4" />
+                                  ) : (
+                                    <Eye className="h-4 w-4" />
+                                  )}
+                                </Button>
                                 <span className="font-medium text-sm truncate max-w-md">
                                   {email.emailSubject || "No subject"}
                                 </span>
@@ -2312,6 +2324,12 @@ function ComparePageContent() {
                                 </Badge>
                               </div>
                               <div className="flex items-center gap-2">
+                                {email.winnerTransactionId && email.winnerTransactionId !== "exclude" && email.winnerTransactionId !== "discussion" && (
+                                  <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 gap-1">
+                                    <Trophy className="h-3 w-3" />
+                                    Winner Selected
+                                  </Badge>
+                                )}
                                 {email.winnerTransactionId === "exclude" && (
                                   <Badge variant="secondary" className="bg-red-100 text-red-800 gap-1">
                                     <Ban className="h-3 w-3" />
@@ -2328,26 +2346,88 @@ function ComparePageContent() {
                             </div>
                           </CardHeader>
                           <CardContent className="pt-0 pb-3">
+                            {/* Email preview */}
+                            {expandedEmailPreviews.has(email.emailId) && (
+                              <div className="mb-4 p-3 bg-white rounded-md border border-gray-200">
+                                {loadingEmails.has(email.emailId) ? (
+                                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Loading email...
+                                  </div>
+                                ) : emailContents.has(email.emailId) ? (
+                                  <div className="max-h-64 overflow-y-auto">
+                                    {emailContents.get(email.emailId)?.bodyHtml ? (
+                                      <div
+                                        className="text-sm prose prose-sm max-w-none"
+                                        dangerouslySetInnerHTML={{
+                                          __html: emailContents.get(email.emailId)?.bodyHtml || "",
+                                        }}
+                                      />
+                                    ) : (
+                                      <pre className="text-sm whitespace-pre-wrap font-sans">
+                                        {emailContents.get(email.emailId)?.bodyText || "No content"}
+                                      </pre>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="text-sm text-gray-500">Failed to load email content</div>
+                                )}
+                              </div>
+                            )}
                             <div className="grid grid-cols-2 gap-4">
                               <div>
-                                <div className="text-xs font-medium text-blue-700 mb-2">{runALabel} Transactions</div>
-                                {email.runATransactions.map((txn, idx) => (
-                                  <div key={txn.id} className="text-xs p-2 bg-blue-50 rounded mb-1">
-                                    <span className="font-medium">{txn.type}</span>
-                                    {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
-                                    {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
-                                  </div>
-                                ))}
+                                <div className="text-xs font-medium text-blue-700 mb-2">{runALabel} Transactions - Click to select as winner</div>
+                                {email.runATransactions.map((txn) => {
+                                  const isWinner = email.winnerTransactionId === txn.id;
+                                  return (
+                                    <div
+                                      key={txn.id}
+                                      className={cn(
+                                        "text-xs p-2 rounded mb-1 cursor-pointer transition-all",
+                                        isWinner
+                                          ? "bg-blue-200 border-2 border-blue-500 ring-2 ring-blue-300"
+                                          : "bg-blue-50 hover:bg-blue-100 border border-transparent"
+                                      )}
+                                      onClick={() => designateWinner(email.emailId, txn.id)}
+                                    >
+                                      <div className="flex items-center justify-between">
+                                        <div>
+                                          <span className="font-medium">{txn.type}</span>
+                                          {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
+                                          {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
+                                        </div>
+                                        {isWinner && <Trophy className="h-3 w-3 text-blue-700" />}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
                               </div>
                               <div>
-                                <div className="text-xs font-medium text-purple-700 mb-2">{runBLabel} Transactions</div>
-                                {email.runBTransactions.map((txn, idx) => (
-                                  <div key={txn.id} className="text-xs p-2 bg-purple-50 rounded mb-1">
-                                    <span className="font-medium">{txn.type}</span>
-                                    {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
-                                    {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
-                                  </div>
-                                ))}
+                                <div className="text-xs font-medium text-purple-700 mb-2">{runBLabel} Transactions - Click to select as winner</div>
+                                {email.runBTransactions.map((txn) => {
+                                  const isWinner = email.winnerTransactionId === txn.id;
+                                  return (
+                                    <div
+                                      key={txn.id}
+                                      className={cn(
+                                        "text-xs p-2 rounded mb-1 cursor-pointer transition-all",
+                                        isWinner
+                                          ? "bg-purple-200 border-2 border-purple-500 ring-2 ring-purple-300"
+                                          : "bg-purple-50 hover:bg-purple-100 border border-transparent"
+                                      )}
+                                      onClick={() => designateWinner(email.emailId, txn.id)}
+                                    >
+                                      <div className="flex items-center justify-between">
+                                        <div>
+                                          <span className="font-medium">{txn.type}</span>
+                                          {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
+                                          {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
+                                        </div>
+                                        {isWinner && <Trophy className="h-3 w-3 text-purple-700" />}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
                             <div className="flex items-center gap-2 mt-3 pt-3 border-t">
@@ -2410,6 +2490,18 @@ function ComparePageContent() {
                           <CardHeader className="py-3">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 w-6 p-0"
+                                  onClick={() => toggleEmailPreview(email.emailId)}
+                                >
+                                  {expandedEmailPreviews.has(email.emailId) ? (
+                                    <ChevronUp className="h-4 w-4" />
+                                  ) : (
+                                    <Eye className="h-4 w-4" />
+                                  )}
+                                </Button>
                                 <span className="font-medium text-sm truncate max-w-md">
                                   {email.emailSubject || "No subject"}
                                 </span>
@@ -2421,6 +2513,12 @@ function ComparePageContent() {
                                 </Badge>
                               </div>
                               <div className="flex items-center gap-2">
+                                {email.winnerTransactionId && email.winnerTransactionId !== "exclude" && email.winnerTransactionId !== "discussion" && (
+                                  <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 gap-1">
+                                    <Trophy className="h-3 w-3" />
+                                    Winner Selected
+                                  </Badge>
+                                )}
                                 {email.winnerTransactionId === "exclude" && (
                                   <Badge variant="secondary" className="bg-red-100 text-red-800 gap-1">
                                     <Ban className="h-3 w-3" />
@@ -2437,33 +2535,95 @@ function ComparePageContent() {
                             </div>
                           </CardHeader>
                           <CardContent className="pt-0 pb-3">
+                            {/* Email preview */}
+                            {expandedEmailPreviews.has(email.emailId) && (
+                              <div className="mb-4 p-3 bg-white rounded-md border border-gray-200">
+                                {loadingEmails.has(email.emailId) ? (
+                                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                    Loading email...
+                                  </div>
+                                ) : emailContents.has(email.emailId) ? (
+                                  <div className="max-h-64 overflow-y-auto">
+                                    {emailContents.get(email.emailId)?.bodyHtml ? (
+                                      <div
+                                        className="text-sm prose prose-sm max-w-none"
+                                        dangerouslySetInnerHTML={{
+                                          __html: emailContents.get(email.emailId)?.bodyHtml || "",
+                                        }}
+                                      />
+                                    ) : (
+                                      <pre className="text-sm whitespace-pre-wrap font-sans">
+                                        {emailContents.get(email.emailId)?.bodyText || "No content"}
+                                      </pre>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="text-sm text-gray-500">Failed to load email content</div>
+                                )}
+                              </div>
+                            )}
                             <div className="grid grid-cols-2 gap-4">
                               <div>
-                                <div className="text-xs font-medium text-blue-700 mb-2">{runALabel} Transactions</div>
+                                <div className="text-xs font-medium text-blue-700 mb-2">{runALabel} Transactions - Click to select as winner</div>
                                 {email.runATransactions.length === 0 ? (
                                   <div className="text-xs text-gray-400 italic">No transactions</div>
                                 ) : (
-                                  email.runATransactions.map((txn, idx) => (
-                                    <div key={txn.id} className="text-xs p-2 bg-blue-50 rounded mb-1">
-                                      <span className="font-medium">{txn.type}</span>
-                                      {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
-                                      {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
-                                    </div>
-                                  ))
+                                  email.runATransactions.map((txn) => {
+                                    const isWinner = email.winnerTransactionId === txn.id;
+                                    return (
+                                      <div
+                                        key={txn.id}
+                                        className={cn(
+                                          "text-xs p-2 rounded mb-1 cursor-pointer transition-all",
+                                          isWinner
+                                            ? "bg-blue-200 border-2 border-blue-500 ring-2 ring-blue-300"
+                                            : "bg-blue-50 hover:bg-blue-100 border border-transparent"
+                                        )}
+                                        onClick={() => designateWinner(email.emailId, txn.id)}
+                                      >
+                                        <div className="flex items-center justify-between">
+                                          <div>
+                                            <span className="font-medium">{txn.type}</span>
+                                            {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
+                                            {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
+                                          </div>
+                                          {isWinner && <Trophy className="h-3 w-3 text-blue-700" />}
+                                        </div>
+                                      </div>
+                                    );
+                                  })
                                 )}
                               </div>
                               <div>
-                                <div className="text-xs font-medium text-purple-700 mb-2">{runBLabel} Transactions</div>
+                                <div className="text-xs font-medium text-purple-700 mb-2">{runBLabel} Transactions - Click to select as winner</div>
                                 {email.runBTransactions.length === 0 ? (
                                   <div className="text-xs text-gray-400 italic">No transactions</div>
                                 ) : (
-                                  email.runBTransactions.map((txn, idx) => (
-                                    <div key={txn.id} className="text-xs p-2 bg-purple-50 rounded mb-1">
-                                      <span className="font-medium">{txn.type}</span>
-                                      {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
-                                      {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
-                                    </div>
-                                  ))
+                                  email.runBTransactions.map((txn) => {
+                                    const isWinner = email.winnerTransactionId === txn.id;
+                                    return (
+                                      <div
+                                        key={txn.id}
+                                        className={cn(
+                                          "text-xs p-2 rounded mb-1 cursor-pointer transition-all",
+                                          isWinner
+                                            ? "bg-purple-200 border-2 border-purple-500 ring-2 ring-purple-300"
+                                            : "bg-purple-50 hover:bg-purple-100 border border-transparent"
+                                        )}
+                                        onClick={() => designateWinner(email.emailId, txn.id)}
+                                      >
+                                        <div className="flex items-center justify-between">
+                                          <div>
+                                            <span className="font-medium">{txn.type}</span>
+                                            {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
+                                            {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
+                                          </div>
+                                          {isWinner && <Trophy className="h-3 w-3 text-purple-700" />}
+                                        </div>
+                                      </div>
+                                    );
+                                  })
                                 )}
                               </div>
                             </div>

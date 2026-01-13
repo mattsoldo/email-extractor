@@ -51,6 +51,7 @@ import {
   X,
   Ban,
   MessageSquare,
+  AlertCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
@@ -110,6 +111,10 @@ interface TransactionComparison {
   dataKeyDifferences: string[];
   winnerTransactionId: string | null;
   fieldOverrides: Record<string, unknown> | null;
+  // Multi-transaction tracking
+  runATransactionCount: number;
+  runBTransactionCount: number;
+  hasMultipleTransactions: boolean;
 }
 
 interface ComparisonSummary {
@@ -343,6 +348,7 @@ function ComparePageContent() {
         discussions: 0,
         pending: 0,
         likelyDiscussions: 0,
+        multiTransaction: 0,
         total: 0,
       };
     }
@@ -357,11 +363,17 @@ function ComparePageContent() {
     let discussions = 0;
     let pending = 0;
     let likelyDiscussions = 0;
+    let multiTransaction = 0;
 
     for (const item of needsDecision) {
       // Count likely discussions
       if (isLikelyDiscussion(item.emailSubject)) {
         likelyDiscussions++;
+      }
+
+      // Count multi-transaction emails
+      if (item.hasMultipleTransactions) {
+        multiTransaction++;
       }
 
       if (!item.winnerTransactionId) {
@@ -387,6 +399,7 @@ function ComparePageContent() {
       discussions,
       pending,
       likelyDiscussions,
+      multiTransaction,
       total: needsDecision.length,
     };
   }, [comparison]);
@@ -413,6 +426,8 @@ function ComparePageContent() {
           return item.winnerTransactionId === "discussion";
         case "likely_discussion":
           return isLikelyDiscussion(item.emailSubject) && item.winnerTransactionId !== "discussion";
+        case "multi_transaction":
+          return item.hasMultipleTransactions;
         case "pending":
           return !item.winnerTransactionId;
         default:
@@ -1076,17 +1091,20 @@ function ComparePageContent() {
     <Card
       key={item.emailId}
       className={cn(
-        item.winnerTransactionId
-          ? item.winnerTransactionId === "discussion"
-            ? "border-indigo-300 bg-indigo-50/30 opacity-60"
-            : item.winnerTransactionId === "exclude"
-              ? "border-red-300 bg-red-50/30 opacity-60"
-              : item.winnerTransactionId === "tie"
-                ? "border-gray-300 bg-gray-50/50"
-                : "border-green-300 bg-green-50/50"
-          : "",
+        // Multi-transaction emails get orange border (highest priority visual)
+        item.hasMultipleTransactions
+          ? "border-orange-400 bg-orange-50/50"
+          : item.winnerTransactionId
+            ? item.winnerTransactionId === "discussion"
+              ? "border-indigo-300 bg-indigo-50/30 opacity-60"
+              : item.winnerTransactionId === "exclude"
+                ? "border-red-300 bg-red-50/30 opacity-60"
+                : item.winnerTransactionId === "tie"
+                  ? "border-gray-300 bg-gray-50/50"
+                  : "border-green-300 bg-green-50/50"
+            : "",
         // Highlight likely discussions that haven't been marked yet
-        !item.winnerTransactionId && isLikelyDiscussion(item.emailSubject) && "ring-2 ring-indigo-300 ring-offset-1"
+        !item.winnerTransactionId && !item.hasMultipleTransactions && isLikelyDiscussion(item.emailSubject) && "ring-2 ring-indigo-300 ring-offset-1"
       )}
     >
       <Collapsible open={expandedItems.has(item.emailId)} onOpenChange={() => toggleExpanded(item.emailId)}>
@@ -1122,6 +1140,12 @@ function ComparePageContent() {
                 </Link>
               </div>
               <div className="flex items-center gap-2">
+                {item.hasMultipleTransactions && (
+                  <Badge variant="secondary" className="bg-orange-100 text-orange-800 gap-1" title={`Run A: ${item.runATransactionCount} txn(s), Run B: ${item.runBTransactionCount} txn(s)`}>
+                    <AlertCircle className="h-3 w-3" />
+                    Multi-txn ({item.runATransactionCount}/{item.runBTransactionCount})
+                  </Badge>
+                )}
                 {getWinnerBadge(item)}
                 {getStatusBadge(item.status)}
               </div>
@@ -1769,6 +1793,24 @@ function ComparePageContent() {
                     </button>
                   </div>
 
+                  {/* Multi-transaction warning */}
+                  {winnerStats.multiTransaction > 0 && (
+                    <button
+                      onClick={() => setWinnerFilter(winnerFilter === "multi_transaction" ? "all" : "multi_transaction")}
+                      className={`w-full p-2 rounded-lg border transition-all flex items-center justify-between ${
+                        winnerFilter === "multi_transaction"
+                          ? "border-orange-400 bg-orange-50"
+                          : "border-orange-200 bg-orange-50/50 hover:bg-orange-50"
+                      }`}
+                    >
+                      <span className="text-sm text-orange-700 flex items-center gap-2">
+                        <AlertCircle className="h-4 w-4" />
+                        {winnerStats.multiTransaction} emails have multiple transactions in one or both runs - review carefully
+                      </span>
+                      <span className="text-xs text-orange-600">Click to filter</span>
+                    </button>
+                  )}
+
                   {/* Likely discussions hint */}
                   {winnerStats.likelyDiscussions > 0 && (
                     <button
@@ -1799,6 +1841,7 @@ function ComparePageContent() {
                           {winnerFilter === "discussion" && "Discussions"}
                           {winnerFilter === "exclude" && "Excluded"}
                           {winnerFilter === "likely_discussion" && "Likely discussions (unmarked)"}
+                          {winnerFilter === "multi_transaction" && "Multi-transaction emails"}
                           {winnerFilter === "pending" && "Pending decisions"}
                         </span>
                       </span>

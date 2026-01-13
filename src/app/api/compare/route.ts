@@ -13,6 +13,10 @@ interface TransactionComparison {
   dataKeyDifferences: string[]; // Keys from the data field that differ
   winnerTransactionId: string | null; // The email's current winner
   fieldOverrides: Record<string, unknown> | null; // User-edited field values for synthesis
+  // Multi-transaction tracking
+  runATransactionCount: number; // How many transactions from this email in run A
+  runBTransactionCount: number; // How many transactions from this email in run B
+  hasMultipleTransactions: boolean; // True if either run has multiple transactions from this email
 }
 
 // Fields to compare between transactions (excluding confidence per user request)
@@ -198,18 +202,22 @@ export async function GET(request: NextRequest) {
       db.select().from(transactions).where(eq(transactions.extractionRunId, runBId)),
     ]);
 
-    // Group transactions by source email
+    // Group transactions by source email and track counts
     const byEmailA = new Map<string, typeof transactions.$inferSelect>();
     const byEmailB = new Map<string, typeof transactions.$inferSelect>();
+    const countByEmailA = new Map<string, number>();
+    const countByEmailB = new Map<string, number>();
 
     for (const t of transactionsA) {
       if (t.sourceEmailId) {
         byEmailA.set(t.sourceEmailId, t);
+        countByEmailA.set(t.sourceEmailId, (countByEmailA.get(t.sourceEmailId) || 0) + 1);
       }
     }
     for (const t of transactionsB) {
       if (t.sourceEmailId) {
         byEmailB.set(t.sourceEmailId, t);
+        countByEmailB.set(t.sourceEmailId, (countByEmailB.get(t.sourceEmailId) || 0) + 1);
       }
     }
 
@@ -238,6 +246,9 @@ export async function GET(request: NextRequest) {
       const { status, differences, dataKeyDifferences } = compareTransactions(tA, tB);
       const emailInfo = emailMap.get(emailId);
 
+      const runACount = countByEmailA.get(emailId) || 0;
+      const runBCount = countByEmailB.get(emailId) || 0;
+
       comparisons.push({
         emailId,
         emailSubject: emailInfo?.subject || null,
@@ -248,6 +259,9 @@ export async function GET(request: NextRequest) {
         dataKeyDifferences,
         winnerTransactionId: emailInfo?.winnerTransactionId || null,
         fieldOverrides: (emailInfo?.fieldOverrides as Record<string, unknown>) || null,
+        runATransactionCount: runACount,
+        runBTransactionCount: runBCount,
+        hasMultipleTransactions: runACount > 1 || runBCount > 1,
       });
     }
 

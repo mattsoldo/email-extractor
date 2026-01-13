@@ -1034,10 +1034,294 @@ Please verify this transaction data against the email content and return your fi
   }
 );
 
+/**
+ * Transaction Review Orchestrator - dispatches review tasks for selected transactions
+ */
+export const transactionReviewOrchestrator = inngest.createFunction(
+  {
+    id: "transaction-review-orchestrator",
+    retries: 3,
+    cancelOn: [
+      {
+        event: "transaction/review-cancel",
+        match: "data.reviewBatchId",
+      },
+    ],
+  },
+  { event: "transaction/review-batch" },
+  async ({ event, step }) => {
+    const { reviewBatchId, transactionIds, emailIds } = event.data;
+
+    // Step 1: Dispatch review tasks for each transaction
+    await step.run("dispatch-reviews", async () => {
+      console.log(`[Inngest Review] Starting review batch ${reviewBatchId} with ${transactionIds.length} transactions`);
+
+      // Get default model and prompt
+      const [defaultPrompt] = await db
+        .select()
+        .from(prompts)
+        .where(eq(prompts.isDefault, true))
+        .limit(1);
+
+      const promptContent = defaultPrompt?.content || "";
+
+      // Dispatch events for each transaction
+      const events = transactionIds.map((transactionId: string, index: number) => ({
+        name: "transaction/review-single" as const,
+        data: {
+          reviewBatchId,
+          transactionId,
+          emailId: emailIds[index],
+          modelId: DEFAULT_MODEL_ID,
+          promptContent,
+          total: transactionIds.length,
+        },
+      }));
+
+      await inngest.send(events);
+
+      return { dispatched: events.length };
+    });
+
+    return {
+      reviewBatchId,
+      transactionsDispatched: transactionIds.length,
+    };
+  }
+);
+
+/**
+ * Transaction Review Processor - reviews a single transaction to fill missing fields
+ */
+export const transactionReviewProcessor = inngest.createFunction(
+  {
+    id: "transaction-review-processor",
+    retries: 3,
+    concurrency: {
+      limit: 20,
+      key: "event.data.reviewBatchId",
+    },
+    cancelOn: [
+      {
+        event: "transaction/review-cancel",
+        match: "data.reviewBatchId",
+      },
+    ],
+  },
+  { event: "transaction/review-single" },
+  async ({ event, step }) => {
+    const { reviewBatchId, transactionId, emailId, modelId } = event.data;
+
+    // Step 1: Fetch transaction and email data
+    const reviewData = await step.run("fetch-data", async () => {
+      const [tx] = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.id, transactionId))
+        .limit(1);
+
+      if (!tx) {
+        throw new Error(`Transaction not found: ${transactionId}`);
+      }
+
+      const [email] = await db
+        .select()
+        .from(emails)
+        .where(eq(emails.id, emailId))
+        .limit(1);
+
+      if (!email) {
+        throw new Error(`Email not found: ${emailId}`);
+      }
+
+      return {
+        transaction: tx,
+        email,
+      };
+    });
+
+    // Step 2: Call the model to extract/update fields
+    const reviewResult = await step.run("call-model", async () => {
+      const { transaction, email } = reviewData;
+
+      // Get default prompt for extraction
+      const [defaultPrompt] = await db
+        .select()
+        .from(prompts)
+        .where(eq(prompts.isDefault, true))
+        .limit(1);
+
+      if (!defaultPrompt) {
+        return { success: false as const, error: "No default prompt found" };
+      }
+
+      try {
+        // Construct ParsedEmail object from database email
+        // Note: database stores dates as strings, ParsedEmail expects Date objects
+        const parsedEmail = {
+          id: email.id,
+          filename: email.filename,
+          subject: email.subject,
+          sender: email.sender,
+          senderName: email.senderName,
+          recipient: email.recipient,
+          recipientName: email.recipientName,
+          cc: email.cc,
+          replyTo: email.replyTo,
+          messageId: email.messageId,
+          inReplyTo: email.inReplyTo,
+          date: email.date ? (typeof email.date === 'string' ? new Date(email.date) : email.date) : null,
+          receivedAt: email.receivedAt ? (typeof email.receivedAt === 'string' ? new Date(email.receivedAt) : email.receivedAt) : null,
+          bodyText: email.bodyText,
+          bodyHtml: email.bodyHtml,
+          rawContent: email.rawContent,
+          headers: (email.headers as Record<string, string>) || {},
+        };
+
+        // Call extraction with full email content
+        const extraction = await extractTransaction(
+          parsedEmail,
+          modelId,
+          defaultPrompt.content
+        );
+
+        // Find matching transaction in extraction (by type, date, amount)
+        let matchingTx: Record<string, unknown> | null = null;
+        if (extraction.isTransactional && extraction.transactions.length > 0) {
+          // Try to match by multiple criteria
+          const found = extraction.transactions.find((t) => {
+            const txType = t.transactionType;
+            const txAmount = t.amount;
+            // Match if type matches, or if amount is close
+            return txType === transaction.type ||
+              (txAmount && transaction.amount &&
+                Math.abs(Number(txAmount) - Number(transaction.amount)) < 0.01);
+          });
+          matchingTx = found ? (found as Record<string, unknown>) : null;
+
+          // If no match, just use the first transaction if only one exists
+          if (!matchingTx && extraction.transactions.length === 1) {
+            matchingTx = extraction.transactions[0] as Record<string, unknown>;
+          }
+        }
+
+        if (!matchingTx) {
+          return { success: true as const, updated: false as const, reason: "No matching transaction found in extraction" };
+        }
+
+        // Collect fields to update
+        const updates: Record<string, unknown> = {};
+        const typedTx = matchingTx as Record<string, unknown>;
+
+        // Check for toAccount fields (critical for transfers)
+        if (typedTx.toAccountNumber || typedTx.toAccountName) {
+          const toAccount = await detectOrCreateAccount({
+            accountNumber: typedTx.toAccountNumber as string | null,
+            accountName: typedTx.toAccountName as string | null,
+            institution: typedTx.toInstitution as string | null,
+            isExternal: transaction.type === "wire_transfer_out" ||
+                       transaction.type === "wire_transfer_in",
+          });
+          if (toAccount && !transaction.toAccountId) {
+            updates.toAccountId = toAccount.id;
+          }
+        }
+
+        // Check for fromAccount fields if missing
+        if ((typedTx.accountNumber || typedTx.accountName) && !transaction.accountId) {
+          const fromAccount = await detectOrCreateAccount({
+            accountNumber: typedTx.accountNumber as string | null,
+            accountName: typedTx.accountName as string | null,
+            institution: typedTx.institution as string | null,
+            isExternal: false,
+          });
+          if (fromAccount) {
+            updates.accountId = fromAccount.id;
+          }
+        }
+
+        // Update other missing fields
+        const fieldMappings: Array<[string, string]> = [
+          ["symbol", "symbol"],
+          ["description", "description"],
+          ["referenceNumber", "referenceNumber"],
+          ["orderId", "orderId"],
+          ["orderType", "orderType"],
+          ["quantity", "quantity"],
+          ["price", "price"],
+          ["fees", "fees"],
+          ["category", "category"],
+        ];
+
+        for (const [dbField, extractionField] of fieldMappings) {
+          const currentValue = (transaction as Record<string, unknown>)[dbField];
+          const newValue = typedTx[extractionField];
+          if ((currentValue === null || currentValue === undefined) && newValue !== null && newValue !== undefined) {
+            updates[dbField] = newValue;
+          }
+        }
+
+        const hasUpdates = Object.keys(updates).length > 0;
+        if (hasUpdates) {
+          return {
+            success: true as const,
+            updated: true as const,
+            updates,
+            fieldsUpdated: Object.keys(updates),
+          };
+        } else {
+          return {
+            success: true as const,
+            updated: false as const,
+            reason: "No missing fields to update",
+          };
+        }
+      } catch (error) {
+        console.error(`[Inngest Review] Error processing transaction ${transactionId}:`, error);
+        return {
+          success: false as const,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    });
+
+    // Step 3: Apply updates if any
+    if (reviewResult.success && reviewResult.updated) {
+      await step.run("apply-updates", async () => {
+        // Type guard: when updated is true, updates and fieldsUpdated exist
+        const result = reviewResult as { success: true; updated: true; updates: Record<string, unknown>; fieldsUpdated: string[] };
+        await db
+          .update(transactions)
+          .set({
+            ...result.updates,
+            updatedAt: new Date(),
+          })
+          .where(eq(transactions.id, transactionId));
+
+        console.log(
+          `[Inngest Review] Updated transaction ${transactionId} with fields: ${result.fieldsUpdated.join(", ")}`
+        );
+      });
+    }
+
+    return {
+      transactionId,
+      success: reviewResult.success,
+      updated: reviewResult.success && reviewResult.updated,
+      fieldsUpdated: (reviewResult.success && reviewResult.updated)
+        ? (reviewResult as { fieldsUpdated: string[] }).fieldsUpdated
+        : [],
+      error: !reviewResult.success ? (reviewResult as { error: string }).error : undefined,
+    };
+  }
+);
+
 // Export all functions
 export const functions = [
   extractionOrchestrator,
   extractionProcessEmail,
   qaOrchestrator,
   qaProcessTransaction,
+  transactionReviewOrchestrator,
+  transactionReviewProcessor,
 ];

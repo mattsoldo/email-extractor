@@ -28,7 +28,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { format } from "date-fns";
-import { ChevronLeft, ChevronRight, RefreshCw, Download, FolderOpen, History, FileSpreadsheet, FileText } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Download, FolderOpen, History, FileSpreadsheet, FileText, CheckSquare, Square, RotateCcw, Loader2, X } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useRouter } from "next/navigation";
 
 interface EmailSet {
@@ -100,6 +101,10 @@ export default function TransactionsPage() {
   const [runFilter, setRunFilter] = useState<string>("all");
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
+
+  // Selection state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [submittingReview, setSubmittingReview] = useState(false);
 
   // Filter options
   const [emailSets, setEmailSets] = useState<EmailSet[]>([]);
@@ -201,6 +206,59 @@ export default function TransactionsPage() {
 
     // Trigger download
     window.location.href = `/api/transactions/export?${params}`;
+  };
+
+  // Selection handlers
+  const toggleSelection = (id: string) => {
+    setSelectedIds((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) {
+        newSet.delete(id);
+      } else {
+        newSet.add(id);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === transactions.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(transactions.map((t) => t.id)));
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+  };
+
+  const submitForReview = async () => {
+    if (selectedIds.size === 0) return;
+
+    setSubmittingReview(true);
+    try {
+      const res = await fetch("/api/transactions/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transactionIds: Array.from(selectedIds),
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        alert(`Submitted ${data.count} transactions for review. They will be re-processed to fill missing fields.`);
+        clearSelection();
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to submit for review");
+      }
+    } catch (error) {
+      alert("Failed to submit for review");
+    } finally {
+      setSubmittingReview(false);
+    }
   };
 
   return (
@@ -309,13 +367,14 @@ export default function TransactionsPage() {
             </Select>
           </div>
 
-          {(setFilter !== "all" || runFilter !== "all") && (
+          {(setFilter !== "all" || runFilter !== "all" || typeFilter !== "all") && (
             <Button
               variant="ghost"
               size="sm"
               onClick={() => {
                 setSetFilter("all");
                 setRunFilter("all");
+                setTypeFilter("all");
                 setPage(1);
               }}
             >
@@ -324,12 +383,57 @@ export default function TransactionsPage() {
           )}
         </div>
 
+        {/* Selection Bar */}
+        {selectedIds.size > 0 && (
+          <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+            <div className="flex items-center gap-4">
+              <span className="font-medium text-blue-900">
+                {selectedIds.size} transaction{selectedIds.size !== 1 ? "s" : ""} selected
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearSelection}
+                className="text-blue-700 hover:text-blue-900"
+              >
+                <X className="h-4 w-4 mr-1" />
+                Clear
+              </Button>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                onClick={submitForReview}
+                disabled={submittingReview}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                {submittingReview ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Submitting...
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw className="h-4 w-4 mr-2" />
+                    Review & Fill Missing Fields
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Transactions Table */}
         <Card>
           <CardContent className="p-0">
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      checked={transactions.length > 0 && selectedIds.size === transactions.length}
+                      onCheckedChange={toggleSelectAll}
+                    />
+                  </TableHead>
                   <TableHead>Date</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Account</TableHead>
@@ -342,13 +446,13 @@ export default function TransactionsPage() {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8">
+                    <TableCell colSpan={8} className="text-center py-8">
                       Loading...
                     </TableCell>
                   </TableRow>
                 ) : transactions.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8">
+                    <TableCell colSpan={8} className="text-center py-8">
                       No transactions found
                     </TableCell>
                   </TableRow>
@@ -356,15 +460,23 @@ export default function TransactionsPage() {
                   transactions.map((tx) => (
                     <TableRow
                       key={tx.id}
-                      className="cursor-pointer hover:bg-gray-50"
-                      onClick={() => router.push(`/transactions/${tx.id}`)}
+                      className={`cursor-pointer hover:bg-gray-50 ${selectedIds.has(tx.id) ? "bg-blue-50" : ""}`}
                     >
-                      <TableCell className="text-gray-600">
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          checked={selectedIds.has(tx.id)}
+                          onCheckedChange={() => toggleSelection(tx.id)}
+                        />
+                      </TableCell>
+                      <TableCell
+                        className="text-gray-600"
+                        onClick={() => router.push(`/transactions/${tx.id}`)}
+                      >
                         {tx.date
                           ? format(new Date(tx.date), "MMM d, yyyy")
                           : "-"}
                       </TableCell>
-                      <TableCell>
+                      <TableCell onClick={() => router.push(`/transactions/${tx.id}`)}>
                         <Badge
                           variant="secondary"
                           className={getTypeBadgeColor(tx.type)}
@@ -372,7 +484,7 @@ export default function TransactionsPage() {
                           {tx.type.replace(/_/g, " ")}
                         </Badge>
                       </TableCell>
-                      <TableCell>
+                      <TableCell onClick={() => router.push(`/transactions/${tx.id}`)}>
                         {tx.account?.displayName || "-"}
                         {tx.account?.institution && (
                           <span className="text-xs text-gray-500 block">
@@ -380,16 +492,28 @@ export default function TransactionsPage() {
                           </span>
                         )}
                       </TableCell>
-                      <TableCell className="font-mono">
+                      <TableCell
+                        className="font-mono"
+                        onClick={() => router.push(`/transactions/${tx.id}`)}
+                      >
                         {tx.symbol || "-"}
                       </TableCell>
-                      <TableCell className="text-right">
+                      <TableCell
+                        className="text-right"
+                        onClick={() => router.push(`/transactions/${tx.id}`)}
+                      >
                         {tx.quantity || "-"}
                       </TableCell>
-                      <TableCell className="text-right">
+                      <TableCell
+                        className="text-right"
+                        onClick={() => router.push(`/transactions/${tx.id}`)}
+                      >
                         {tx.price ? formatAmount(tx.price, tx.currency) : "-"}
                       </TableCell>
-                      <TableCell className="text-right font-medium">
+                      <TableCell
+                        className="text-right font-medium"
+                        onClick={() => router.push(`/transactions/${tx.id}`)}
+                      >
                         {formatAmount(tx.amount, tx.currency)}
                       </TableCell>
                     </TableRow>

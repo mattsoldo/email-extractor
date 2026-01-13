@@ -143,6 +143,7 @@ function ComparePageContent() {
   const [emailContents, setEmailContents] = useState<Map<string, EmailContent>>(new Map());
   const [loadingEmails, setLoadingEmails] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState<Set<string>>(new Set());
+  const [expandedPatternGroups, setExpandedPatternGroups] = useState<Set<string>>(new Set());
 
   // Synthesis dialog state
   const [synthesizeDialogOpen, setSynthesizeDialogOpen] = useState(false);
@@ -485,6 +486,18 @@ function ComparePageContent() {
         next.delete(type);
       } else {
         next.add(type);
+      }
+      return next;
+    });
+  };
+
+  const togglePatternGroupExpanded = (groupKey: string) => {
+    setExpandedPatternGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
+      } else {
+        next.add(groupKey);
       }
       return next;
     });
@@ -1309,91 +1322,107 @@ function ComparePageContent() {
                                   return items.map((item) => renderComparisonItem(item));
                                 }
 
-                                // Multiple patterns - show as sub-groups
+                                // Multiple patterns - show as sub-groups (collapsible)
                                 return Array.from(patterns.values()).map((group, groupIdx) => {
                                   const groupKey = `${type}-pattern-${groupIdx}`;
                                   const groupResolved = group.items.filter((i) => i.winnerTransactionId).length;
                                   const hasFieldDiffs = group.fieldsOnlyInA.length > 0 || group.fieldsOnlyInB.length > 0;
+                                  const isGroupExpanded = expandedPatternGroups.has(groupKey);
 
                                   return (
-                                    <div key={groupKey} className="border rounded-lg bg-yellow-50/50 p-3 space-y-3">
-                                      {/* Pattern description */}
-                                      <div className="flex items-center justify-between flex-wrap gap-2">
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                          <Badge variant="outline" className="bg-white">
-                                            {group.items.length} items
-                                          </Badge>
-                                          <Badge
-                                            variant="secondary"
-                                            className={
-                                              groupResolved === group.items.length
-                                                ? "bg-green-100 text-green-800"
-                                                : "bg-gray-100 text-gray-600"
-                                            }
-                                          >
-                                            {groupResolved}/{group.items.length} resolved
-                                          </Badge>
-                                          {group.fieldsOnlyInA.length > 0 && (
-                                            <span className="text-xs text-blue-700">
-                                              Only in {runALabel}: {group.fieldsOnlyInA.join(", ")}
-                                            </span>
-                                          )}
-                                          {group.fieldsOnlyInB.length > 0 && (
-                                            <span className="text-xs text-purple-700">
-                                              Only in {runBLabel}: {group.fieldsOnlyInB.join(", ")}
-                                            </span>
-                                          )}
-                                          {group.commonDifferences.length > 0 && !hasFieldDiffs && (
-                                            <span className="text-xs text-gray-600">
-                                              Differs: {group.commonDifferences.join(", ")}
-                                            </span>
-                                          )}
-                                        </div>
-                                        {/* Bulk actions for this pattern group */}
-                                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                                          <span className="text-xs text-gray-500 mr-1">Set group:</span>
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="h-6 text-xs px-2 border-blue-300 text-blue-700 hover:bg-blue-50"
-                                            onClick={() => bulkDesignateWinner(group.items, "a")}
-                                            disabled={bulkLoading.has(groupKey)}
-                                          >
-                                            {bulkLoading.has(groupKey) ? (
-                                              <Loader2 className="h-3 w-3 animate-spin" />
-                                            ) : (
-                                              <>{runALabel}</>
-                                            )}
-                                          </Button>
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="h-6 text-xs px-2 border-purple-300 text-purple-700 hover:bg-purple-50"
-                                            onClick={() => bulkDesignateWinner(group.items, "b")}
-                                            disabled={bulkLoading.has(groupKey)}
-                                          >
-                                            {bulkLoading.has(groupKey) ? (
-                                              <Loader2 className="h-3 w-3 animate-spin" />
-                                            ) : (
-                                              <>{runBLabel}</>
-                                            )}
-                                          </Button>
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="h-6 text-xs px-2 border-gray-300 text-gray-700 hover:bg-gray-50"
-                                            onClick={() => bulkDesignateWinner(group.items, "tie")}
-                                            disabled={bulkLoading.has(groupKey)}
-                                          >
-                                            Tie
-                                          </Button>
-                                        </div>
+                                    <Collapsible
+                                      key={groupKey}
+                                      open={isGroupExpanded}
+                                      onOpenChange={() => togglePatternGroupExpanded(groupKey)}
+                                    >
+                                      <div className="border rounded-lg bg-yellow-50/50 overflow-hidden">
+                                        {/* Pattern description - clickable header */}
+                                        <CollapsibleTrigger asChild>
+                                          <div className="flex items-center justify-between flex-wrap gap-2 p-3 cursor-pointer hover:bg-yellow-100/50 transition-colors">
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                              <ChevronDown
+                                                className={`h-4 w-4 text-gray-400 transition-transform ${
+                                                  isGroupExpanded ? "rotate-180" : ""
+                                                }`}
+                                              />
+                                              <Badge variant="outline" className="bg-white">
+                                                {group.items.length} items
+                                              </Badge>
+                                              <Badge
+                                                variant="secondary"
+                                                className={
+                                                  groupResolved === group.items.length
+                                                    ? "bg-green-100 text-green-800"
+                                                    : "bg-gray-100 text-gray-600"
+                                                }
+                                              >
+                                                {groupResolved}/{group.items.length} resolved
+                                              </Badge>
+                                              {group.fieldsOnlyInA.length > 0 && (
+                                                <span className="text-xs text-blue-700">
+                                                  Only in {runALabel}: {group.fieldsOnlyInA.join(", ")}
+                                                </span>
+                                              )}
+                                              {group.fieldsOnlyInB.length > 0 && (
+                                                <span className="text-xs text-purple-700">
+                                                  Only in {runBLabel}: {group.fieldsOnlyInB.join(", ")}
+                                                </span>
+                                              )}
+                                              {group.commonDifferences.length > 0 && !hasFieldDiffs && (
+                                                <span className="text-xs text-gray-600">
+                                                  Differs: {group.commonDifferences.join(", ")}
+                                                </span>
+                                              )}
+                                            </div>
+                                            {/* Bulk actions for this pattern group */}
+                                            <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                                              <span className="text-xs text-gray-500 mr-1">Set group:</span>
+                                              <Button
+                                                size="sm"
+                                                variant="outline"
+                                                className="h-6 text-xs px-2 border-blue-300 text-blue-700 hover:bg-blue-50"
+                                                onClick={() => bulkDesignateWinner(group.items, "a")}
+                                                disabled={bulkLoading.has(groupKey)}
+                                              >
+                                                {bulkLoading.has(groupKey) ? (
+                                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                                ) : (
+                                                  <>{runALabel}</>
+                                                )}
+                                              </Button>
+                                              <Button
+                                                size="sm"
+                                                variant="outline"
+                                                className="h-6 text-xs px-2 border-purple-300 text-purple-700 hover:bg-purple-50"
+                                                onClick={() => bulkDesignateWinner(group.items, "b")}
+                                                disabled={bulkLoading.has(groupKey)}
+                                              >
+                                                {bulkLoading.has(groupKey) ? (
+                                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                                ) : (
+                                                  <>{runBLabel}</>
+                                                )}
+                                              </Button>
+                                              <Button
+                                                size="sm"
+                                                variant="outline"
+                                                className="h-6 text-xs px-2 border-gray-300 text-gray-700 hover:bg-gray-50"
+                                                onClick={() => bulkDesignateWinner(group.items, "tie")}
+                                                disabled={bulkLoading.has(groupKey)}
+                                              >
+                                                Tie
+                                              </Button>
+                                            </div>
+                                          </div>
+                                        </CollapsibleTrigger>
+                                        {/* Items in this pattern group - collapsible content */}
+                                        <CollapsibleContent>
+                                          <div className="space-y-2 p-3 pt-0">
+                                            {group.items.map((item) => renderComparisonItem(item))}
+                                          </div>
+                                        </CollapsibleContent>
                                       </div>
-                                      {/* Items in this pattern group */}
-                                      <div className="space-y-2">
-                                        {group.items.map((item) => renderComparisonItem(item))}
-                                      </div>
-                                    </div>
+                                    </Collapsible>
                                   );
                                 });
                               })()}

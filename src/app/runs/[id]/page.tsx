@@ -14,6 +14,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { format } from "date-fns";
 import {
   ArrowLeft,
@@ -28,6 +36,8 @@ import {
   MessageCircle,
   StopCircle,
   Sparkles,
+  Plus,
+  Database,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -83,6 +93,14 @@ export default function RunDetailPage() {
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
   const [flattening, setFlattening] = useState(false);
+  const [flattenDialogOpen, setFlattenDialogOpen] = useState(false);
+  const [flattenPreview, setFlattenPreview] = useState<{
+    newColumns: Array<{ columnName: string; originalKey: string; occurrences: number }>;
+    existingColumns: Array<{ columnName: string; originalKey: string; occurrences: number }>;
+    totalKeys: number;
+    totalTransactions: number;
+  } | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
 
   const handleCancel = async () => {
     if (!run || cancelling) return;
@@ -104,7 +122,38 @@ export default function RunDetailPage() {
     }
   };
 
-  const handleFlattenData = async () => {
+  const handleFlattenPreview = async () => {
+    if (!run || loadingPreview) return;
+
+    setLoadingPreview(true);
+    try {
+      const res = await fetch("/api/runs/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "data_flatten",
+          runAId: runId,
+          preview: true,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to get preview");
+      }
+
+      const data = await res.json();
+      setFlattenPreview(data.changes);
+      setFlattenDialogOpen(true);
+    } catch (error) {
+      console.error("Failed to get flatten preview:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to get preview");
+    } finally {
+      setLoadingPreview(false);
+    }
+  };
+
+  const handleFlattenConfirm = async () => {
     if (!run || flattening) return;
 
     setFlattening(true);
@@ -125,6 +174,7 @@ export default function RunDetailPage() {
 
       const data = await res.json();
       toast.success(`Created flattened run: ${data.run.name}`);
+      setFlattenDialogOpen(false);
       // Navigate to the new run
       router.push(`/runs/${data.run.id}`);
     } catch (error) {
@@ -308,10 +358,10 @@ export default function RunDetailPage() {
                 variant="outline"
                 size="sm"
                 className="gap-2 border-purple-300 text-purple-700 hover:bg-purple-50"
-                onClick={handleFlattenData}
-                disabled={flattening}
+                onClick={handleFlattenPreview}
+                disabled={loadingPreview}
               >
-                {flattening ? (
+                {loadingPreview ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <Sparkles className="h-4 w-4" />
@@ -563,6 +613,105 @@ export default function RunDetailPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Flatten Data Confirmation Dialog */}
+        <Dialog open={flattenDialogOpen} onOpenChange={setFlattenDialogOpen}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-purple-600" />
+                Flatten Data to Columns
+              </DialogTitle>
+              <DialogDescription>
+                This will create a new synthesized run with JSON data moved into database columns.
+              </DialogDescription>
+            </DialogHeader>
+
+            {flattenPreview && (
+              <div className="space-y-4 py-4">
+                <div className="text-sm text-gray-600">
+                  Processing <span className="font-semibold">{flattenPreview.totalTransactions}</span> transactions
+                  with <span className="font-semibold">{flattenPreview.totalKeys}</span> unique data keys.
+                </div>
+
+                {flattenPreview.newColumns.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-green-700">
+                      <Plus className="h-4 w-4" />
+                      New Columns to Create ({flattenPreview.newColumns.length})
+                    </div>
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-3 max-h-48 overflow-y-auto">
+                      <div className="space-y-1">
+                        {flattenPreview.newColumns.map((col) => (
+                          <div key={col.columnName} className="flex justify-between text-sm">
+                            <code className="text-green-800">{col.columnName}</code>
+                            <span className="text-gray-500">
+                              {col.occurrences} transactions
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {flattenPreview.existingColumns.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-blue-700">
+                      <Database className="h-4 w-4" />
+                      Existing Columns ({flattenPreview.existingColumns.length})
+                    </div>
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 max-h-32 overflow-y-auto">
+                      <div className="space-y-1">
+                        {flattenPreview.existingColumns.map((col) => (
+                          <div key={col.columnName} className="flex justify-between text-sm">
+                            <code className="text-blue-800">{col.columnName}</code>
+                            <span className="text-gray-500">
+                              {col.occurrences} transactions
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {flattenPreview.newColumns.length === 0 && flattenPreview.existingColumns.length === 0 && (
+                  <div className="text-sm text-gray-500 italic">
+                    No data keys found to flatten.
+                  </div>
+                )}
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setFlattenDialogOpen(false)}
+                disabled={flattening}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleFlattenConfirm}
+                disabled={flattening || !flattenPreview || (flattenPreview.newColumns.length === 0 && flattenPreview.existingColumns.length === 0)}
+                className="gap-2 bg-purple-600 hover:bg-purple-700"
+              >
+                {flattening ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4" />
+                    Create Flattened Run
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );

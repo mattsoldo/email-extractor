@@ -8,7 +8,7 @@ import { randomUUID } from "crypto";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { type, runAId, runBId, primaryRunId, name, description } = body;
+    const { type, runAId, runBId, primaryRunId, name, description, preview } = body;
 
     if (!type) {
       return NextResponse.json(
@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
         sourceRunId: runAId,
         name,
         description,
+        preview: preview === true,
       });
     }
 
@@ -314,6 +315,7 @@ interface DataFlattenParams {
   sourceRunId: string;
   name?: string;
   description?: string;
+  preview?: boolean;
 }
 
 // Convert camelCase or any string to snake_case for PostgreSQL column names
@@ -328,7 +330,7 @@ function toSnakeCase(str: string): string {
 }
 
 async function handleDataFlatten(params: DataFlattenParams) {
-  const { sourceRunId, name, description } = params;
+  const { sourceRunId, name, description, preview = false } = params;
 
   if (!sourceRunId) {
     return NextResponse.json(
@@ -409,6 +411,53 @@ async function handleDataFlatten(params: DataFlattenParams) {
     if (!existingColumns.has(columnName)) {
       columnsToCreate.push(columnName);
     }
+  }
+
+  // If preview mode, return what would happen without making changes
+  if (preview) {
+    // Count how many transactions have each key
+    const keyOccurrences: Record<string, number> = {};
+    for (const key of allKeys) {
+      keyOccurrences[key] = 0;
+    }
+    for (const [, flatData] of flattenedDataByTxn) {
+      for (const key of Object.keys(flatData)) {
+        if (keyOccurrences[key] !== undefined) {
+          keyOccurrences[key]++;
+        }
+      }
+    }
+
+    return NextResponse.json({
+      preview: true,
+      sourceRun: {
+        id: sourceRun.id,
+        version: sourceRun.version,
+        name: sourceRun.name,
+        transactionCount: sourceTransactions.length,
+      },
+      changes: {
+        newColumns: columnsToCreate.map((col) => {
+          // Find the original key for this column
+          const originalKey = Array.from(keyToColumn.entries())
+            .find(([, v]) => v === col)?.[0] || col;
+          return {
+            columnName: col,
+            originalKey,
+            occurrences: keyOccurrences[originalKey] || 0,
+          };
+        }),
+        existingColumns: Array.from(allKeys)
+          .filter((key) => existingColumns.has(toSnakeCase(key)))
+          .map((key) => ({
+            columnName: toSnakeCase(key),
+            originalKey: key,
+            occurrences: keyOccurrences[key] || 0,
+          })),
+        totalKeys: allKeys.size,
+        totalTransactions: sourceTransactions.length,
+      },
+    });
   }
 
   // Step 4: Create new columns (all as TEXT for flexibility)

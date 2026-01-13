@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { transactions, accounts, emails } from "@/db/schema";
-import { desc, eq, and, inArray } from "drizzle-orm";
+import { desc, eq, and, inArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { format } from "date-fns";
 
 // GET /api/transactions/export - Export all transactions as CSV
@@ -10,6 +11,11 @@ export async function GET(request: NextRequest) {
   const setId = searchParams.get("setId");
   const runId = searchParams.get("runId");
   const fileFormat = searchParams.get("format") || "csv"; // csv or excel
+
+  // Get base URL for links
+  const host = request.headers.get("host") || "localhost:3000";
+  const protocol = host.includes("localhost") ? "http" : "https";
+  const baseUrl = `${protocol}://${host}`;
 
   try {
     // Build conditions
@@ -35,14 +41,19 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Fetch all transactions with account info
+    // Create alias for toAccount join
+    const toAccounts = alias(accounts, "to_accounts");
+
+    // Fetch all transactions with both account and toAccount info
     const results = await db
       .select({
         transaction: transactions,
         account: accounts,
+        toAccount: toAccounts,
       })
       .from(transactions)
       .leftJoin(accounts, eq(transactions.accountId, accounts.id))
+      .leftJoin(toAccounts, eq(transactions.toAccountId, toAccounts.id))
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(transactions.date));
 
@@ -52,18 +63,29 @@ export async function GET(request: NextRequest) {
         ? format(new Date(r.transaction.date), "yyyy-MM-dd")
         : "",
       type: r.transaction.type,
-      account: r.account?.displayName || "",
-      institution: r.account?.institution || "",
-      accountNumber: r.account?.accountNumber || r.account?.maskedNumber || "",
+      // Account fields (source/from account)
+      "Account Name": r.account?.displayName || "",
+      "Account Institution": r.account?.institution || "",
+      "Account Number": r.account?.accountNumber || r.account?.maskedNumber || "",
+      // To Account fields (destination account for transfers)
+      "To Account Name": r.toAccount?.displayName || "",
+      "To Account Institution": r.toAccount?.institution || "",
+      "To Account Number": r.toAccount?.accountNumber || r.toAccount?.maskedNumber || "",
+      // Transaction details
       symbol: r.transaction.symbol || "",
       quantity: r.transaction.quantity || "",
       price: r.transaction.price || "",
       amount: r.transaction.amount || "",
       fees: r.transaction.fees || "",
       currency: r.transaction.currency || "USD",
+      description: r.transaction.description || "",
+      referenceNumber: r.transaction.referenceNumber || "",
       confidence: r.transaction.confidence || "",
-      // Flatten common data fields
-      ...(r.transaction.data as Record<string, unknown> || {}),
+      // Links
+      "Transaction Link": `${baseUrl}/transactions/${r.transaction.id}`,
+      "Email Link": r.transaction.sourceEmailId
+        ? `${baseUrl}/emails/${r.transaction.sourceEmailId}`
+        : "",
     }));
 
     return createCsvResponse(rows, fileFormat);
@@ -95,16 +117,23 @@ function createCsvResponse(
   const priorityHeaders = [
     "date",
     "type",
-    "account",
-    "institution",
-    "accountNumber",
+    "Account Name",
+    "Account Institution",
+    "Account Number",
+    "To Account Name",
+    "To Account Institution",
+    "To Account Number",
     "symbol",
     "quantity",
     "price",
     "amount",
     "fees",
     "currency",
+    "description",
+    "referenceNumber",
     "confidence",
+    "Transaction Link",
+    "Email Link",
   ];
 
   // Add priority headers first, then any additional ones

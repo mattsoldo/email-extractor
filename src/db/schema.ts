@@ -53,6 +53,13 @@ export const modelProviderEnum = pgEnum("model_provider", [
   "google",
 ]);
 
+export const qaResultStatusEnum = pgEnum("qa_result_status", [
+  "pending_review",
+  "accepted",
+  "rejected",
+  "partial", // Some fields accepted, some rejected
+]);
+
 // AI Models - stores model configurations (takes precedence over code defaults)
 export const aiModels = pgTable("ai_models", {
   id: text("id").primaryKey(), // The API model ID (e.g., "claude-sonnet-4-5-20241022")
@@ -383,6 +390,80 @@ export const discussionSummaries = pgTable("discussion_summaries", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// QA Runs - quality assurance runs that verify transaction data against source emails
+export const qaRuns = pgTable("qa_runs", {
+  id: text("id").primaryKey(),
+  setId: text("set_id").references(() => emailSets.id).notNull(),
+  sourceRunId: text("source_run_id").references(() => extractionRuns.id).notNull(),
+  modelId: text("model_id").notNull(),
+  promptId: text("prompt_id").references(() => prompts.id).notNull(),
+
+  // Progress tracking
+  status: text("status").default("pending"), // pending, running, completed, failed
+  transactionsTotal: integer("transactions_total").default(0),
+  transactionsChecked: integer("transactions_checked").default(0),
+  issuesFound: integer("issues_found").default(0),
+
+  // Configuration (filters, settings)
+  config: jsonb("config").$type<{
+    filters?: {
+      transactionTypes?: string[];
+      minConfidence?: number;
+      maxConfidence?: number;
+    };
+  }>(),
+
+  // Output
+  synthesizedRunId: text("synthesized_run_id").references(() => extractionRuns.id), // Set when user creates output run
+
+  // Timestamps
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// QA Results - individual transaction QA results
+export const qaResults = pgTable("qa_results", {
+  id: text("id").primaryKey(),
+  qaRunId: text("qa_run_id").references(() => qaRuns.id).notNull(),
+  transactionId: text("transaction_id").references(() => transactions.id).notNull(),
+  sourceEmailId: text("source_email_id").references(() => emails.id).notNull(),
+
+  // QA findings
+  hasIssues: boolean("has_issues").default(false),
+
+  // Field issues (accuracy problems)
+  fieldIssues: jsonb("field_issues").$type<Array<{
+    field: string;
+    currentValue: unknown;
+    suggestedValue: unknown;
+    confidence: "high" | "medium" | "low";
+    reason: string;
+  }>>().default([]),
+
+  // Duplicate field detection
+  duplicateFields: jsonb("duplicate_fields").$type<Array<{
+    fields: string[];
+    suggestedCanonical: string;
+    reason: string;
+  }>>().default([]),
+
+  // Overall assessment from model
+  overallAssessment: text("overall_assessment"),
+
+  // Review status and decisions
+  status: qaResultStatusEnum("status").default("pending_review"),
+  acceptedFields: jsonb("accepted_fields").$type<Record<string, boolean>>(), // { "amount": true, "data.fees": false }
+  acceptedMerges: jsonb("accepted_merges").$type<Array<{
+    canonical: string;
+    merged: string[];
+  }>>(),
+
+  // Timestamps
+  reviewedAt: timestamp("reviewed_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // Relations
 export const accountCorpusRelations = relations(accountCorpus, ({ many }) => ({
   accounts: many(accounts),
@@ -472,6 +553,37 @@ export const discussionSummariesRelations = relations(discussionSummaries, ({ on
   }),
 }));
 
+export const qaRunsRelations = relations(qaRuns, ({ one, many }) => ({
+  set: one(emailSets, {
+    fields: [qaRuns.setId],
+    references: [emailSets.id],
+  }),
+  sourceRun: one(extractionRuns, {
+    fields: [qaRuns.sourceRunId],
+    references: [extractionRuns.id],
+  }),
+  synthesizedRun: one(extractionRuns, {
+    fields: [qaRuns.synthesizedRunId],
+    references: [extractionRuns.id],
+  }),
+  results: many(qaResults),
+}));
+
+export const qaResultsRelations = relations(qaResults, ({ one }) => ({
+  qaRun: one(qaRuns, {
+    fields: [qaResults.qaRunId],
+    references: [qaRuns.id],
+  }),
+  transaction: one(transactions, {
+    fields: [qaResults.transactionId],
+    references: [transactions.id],
+  }),
+  email: one(emails, {
+    fields: [qaResults.sourceEmailId],
+    references: [emails.id],
+  }),
+}));
+
 // Type exports for use in application code
 export type AccountCorpus = typeof accountCorpus.$inferSelect;
 export type NewAccountCorpus = typeof accountCorpus.$inferInsert;
@@ -498,3 +610,7 @@ export type AiModel = typeof aiModels.$inferSelect;
 export type NewAiModel = typeof aiModels.$inferInsert;
 export type Prompt = typeof prompts.$inferSelect;
 export type NewPrompt = typeof prompts.$inferInsert;
+export type QaRun = typeof qaRuns.$inferSelect;
+export type NewQaRun = typeof qaRuns.$inferInsert;
+export type QaResult = typeof qaResults.$inferSelect;
+export type NewQaResult = typeof qaResults.$inferInsert;

@@ -9,6 +9,8 @@ import {
   prompts,
   discussionSummaries,
   jobs,
+  qaRuns,
+  qaResults,
 } from "@/db/schema";
 import { eq, sql, desc } from "drizzle-orm";
 import { v4 as uuid } from "uuid";
@@ -602,5 +604,422 @@ export const extractionProcessEmail = inngest.createFunction(
   }
 );
 
+/**
+ * QA Orchestrator - creates the QA run and fans out to individual transaction processors
+ */
+export const qaOrchestrator = inngest.createFunction(
+  {
+    id: "qa-orchestrator",
+    retries: 3,
+    cancelOn: [
+      {
+        event: "qa/cancel",
+        match: "data.qaRunId",
+      },
+    ],
+  },
+  { event: "qa/started" },
+  async ({ event, step }) => {
+    const { qaRunId, sourceRunId, modelId, promptId, filters } = event.data;
+
+    // Step 1: Initialize the QA run
+    const runInfo = await step.run("initialize-qa-run", async () => {
+      // Get source run info
+      const [sourceRun] = await db
+        .select()
+        .from(extractionRuns)
+        .where(eq(extractionRuns.id, sourceRunId))
+        .limit(1);
+
+      if (!sourceRun) {
+        throw new Error(`Source run not found: ${sourceRunId}`);
+      }
+
+      // Get transactions to QA with optional filtering
+      let transactionsQuery = db
+        .select({
+          id: transactions.id,
+          sourceEmailId: transactions.sourceEmailId,
+          type: transactions.type,
+          confidence: transactions.confidence,
+        })
+        .from(transactions)
+        .where(eq(transactions.extractionRunId, sourceRunId));
+
+      const txList = await transactionsQuery;
+
+      // Apply filters
+      let filteredTx = txList;
+      if (filters?.transactionTypes?.length) {
+        filteredTx = filteredTx.filter((t) =>
+          filters.transactionTypes!.includes(t.type)
+        );
+      }
+      if (filters?.minConfidence !== undefined) {
+        filteredTx = filteredTx.filter(
+          (t) => t.confidence && parseFloat(t.confidence) >= filters.minConfidence!
+        );
+      }
+      if (filters?.maxConfidence !== undefined) {
+        filteredTx = filteredTx.filter(
+          (t) => t.confidence && parseFloat(t.confidence) <= filters.maxConfidence!
+        );
+      }
+
+      // Update QA run with total count
+      await db
+        .update(qaRuns)
+        .set({
+          status: "running",
+          startedAt: new Date(),
+          transactionsTotal: filteredTx.length,
+        })
+        .where(eq(qaRuns.id, qaRunId));
+
+      console.log(
+        `[Inngest QA] Starting QA run ${qaRunId}: ${filteredTx.length} transactions to check`
+      );
+
+      return {
+        qaRunId,
+        setId: sourceRun.setId,
+        transactionIds: filteredTx.map((t) => ({
+          id: t.id,
+          emailId: t.sourceEmailId,
+        })),
+        totalTransactions: filteredTx.length,
+      };
+    });
+
+    // Step 2: Fetch prompt
+    const promptContent = await step.run("fetch-prompt", async () => {
+      const [prompt] = await db
+        .select()
+        .from(prompts)
+        .where(eq(prompts.id, promptId))
+        .limit(1);
+
+      if (!prompt) {
+        throw new Error(`Prompt not found: ${promptId}`);
+      }
+
+      return prompt.content;
+    });
+
+    // Step 3: Fan out - send an event for each transaction to be QA'd
+    await step.run("dispatch-qa-events", async () => {
+      const events = runInfo.transactionIds.map((tx) => ({
+        name: "qa/process-transaction" as const,
+        data: {
+          qaRunId: runInfo.qaRunId,
+          transactionId: tx.id,
+          emailId: tx.emailId,
+          modelId,
+          promptContent,
+          totalTransactions: runInfo.totalTransactions,
+        },
+      }));
+
+      // Send all events in batches
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < events.length; i += BATCH_SIZE) {
+        const batch = events.slice(i, i + BATCH_SIZE);
+        await inngest.send(batch);
+      }
+
+      console.log(
+        `[Inngest QA] Dispatched ${events.length} QA events for run ${runInfo.qaRunId}`
+      );
+    });
+
+    return {
+      qaRunId: runInfo.qaRunId,
+      transactionsDispatched: runInfo.transactionIds.length,
+      totalTransactions: runInfo.totalTransactions,
+    };
+  }
+);
+
+/**
+ * QA Transaction Processor - QAs a single transaction against its source email
+ */
+export const qaProcessTransaction = inngest.createFunction(
+  {
+    id: "qa-process-transaction",
+    retries: 3,
+    concurrency: {
+      limit: 50,
+      key: "event.data.qaRunId",
+    },
+    cancelOn: [
+      {
+        event: "qa/cancel",
+        match: "data.qaRunId",
+      },
+    ],
+  },
+  { event: "qa/process-transaction" },
+  async ({ event, step }) => {
+    const { qaRunId, transactionId, emailId, modelId, promptContent, totalTransactions } =
+      event.data;
+
+    // Step 1: Fetch transaction and email data
+    const qaData = await step.run("fetch-data", async () => {
+      const [tx] = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.id, transactionId))
+        .limit(1);
+
+      if (!tx) {
+        throw new Error(`Transaction not found: ${transactionId}`);
+      }
+
+      const [email] = await db
+        .select()
+        .from(emails)
+        .where(eq(emails.id, emailId!))
+        .limit(1);
+
+      if (!email) {
+        throw new Error(`Email not found: ${emailId}`);
+      }
+
+      // Build transaction JSON (exclude internal fields)
+      const txJson = {
+        type: tx.type,
+        amount: tx.amount,
+        currency: tx.currency,
+        date: tx.date,
+        symbol: tx.symbol,
+        description: tx.description,
+        category: tx.category,
+        quantity: tx.quantity,
+        quantityExecuted: tx.quantityExecuted,
+        quantityRemaining: tx.quantityRemaining,
+        price: tx.price,
+        executionPrice: tx.executionPrice,
+        priceType: tx.priceType,
+        limitPrice: tx.limitPrice,
+        fees: tx.fees,
+        contractSize: tx.contractSize,
+        optionType: tx.optionType,
+        strikePrice: tx.strikePrice,
+        expirationDate: tx.expirationDate,
+        optionAction: tx.optionAction,
+        securityName: tx.securityName,
+        grantNumber: tx.grantNumber,
+        vestDate: tx.vestDate,
+        orderId: tx.orderId,
+        orderType: tx.orderType,
+        orderQuantity: tx.orderQuantity,
+        orderPrice: tx.orderPrice,
+        orderStatus: tx.orderStatus,
+        timeInForce: tx.timeInForce,
+        referenceNumber: tx.referenceNumber,
+        partiallyExecuted: tx.partiallyExecuted,
+        executionTime: tx.executionTime,
+        data: tx.data,
+        confidence: tx.confidence,
+      };
+
+      // Remove null/undefined fields for cleaner JSON
+      const cleanTxJson = Object.fromEntries(
+        Object.entries(txJson).filter(([, v]) => v !== null && v !== undefined)
+      );
+
+      return {
+        transactionJson: JSON.stringify(cleanTxJson, null, 2),
+        emailSubject: email.subject,
+        emailBody: email.bodyText || email.bodyHtml || "",
+        emailSender: email.sender,
+        emailDate: email.date,
+      };
+    });
+
+    // Step 2: Call the AI model for QA
+    type QAModelResult = {
+      success: true;
+      hasIssues: boolean;
+      fieldIssues: Array<{
+        field: string;
+        currentValue: unknown;
+        suggestedValue: unknown;
+        confidence: "high" | "medium" | "low";
+        reason: string;
+      }>;
+      duplicateFields: Array<{
+        fields: string[];
+        suggestedCanonical: string;
+        reason: string;
+      }>;
+      overallAssessment?: string;
+    } | {
+      success: false;
+      error: string;
+    };
+
+    const qaResult: QAModelResult = await step.run("qa-with-model", async () => {
+      try {
+        const { generateText } = await import("ai");
+        const { anthropic } = await import("@ai-sdk/anthropic");
+        const { openai } = await import("@ai-sdk/openai");
+        const { google } = await import("@ai-sdk/google");
+
+        // Determine provider from model ID
+        let model;
+        if (modelId.includes("claude")) {
+          model = anthropic(modelId);
+        } else if (modelId.includes("gpt") || modelId.includes("o1") || modelId.includes("o3")) {
+          model = openai(modelId);
+        } else if (modelId.includes("gemini")) {
+          model = google(modelId);
+        } else {
+          // Default to anthropic
+          model = anthropic(modelId);
+        }
+
+        const systemPrompt = promptContent;
+        const userMessage = `## Email Information
+Subject: ${qaData.emailSubject}
+From: ${qaData.emailSender}
+Date: ${qaData.emailDate}
+
+## Email Body
+${qaData.emailBody}
+
+## Extracted Transaction Data
+\`\`\`json
+${qaData.transactionJson}
+\`\`\`
+
+Please verify this transaction data against the email content and return your findings as JSON.`;
+
+        const response = await generateText({
+          model,
+          system: systemPrompt,
+          prompt: userMessage,
+        });
+
+        const text = response.text;
+
+        // Try to extract JSON from the response
+        let jsonMatch = text.match(/```json\n?([\s\S]*?)\n?```/);
+        let parsed: Record<string, unknown>;
+
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[1]);
+        } else {
+          // Try parsing the entire response as JSON
+          parsed = JSON.parse(text);
+        }
+
+        return {
+          success: true as const,
+          hasIssues: parsed.hasIssues as boolean ?? false,
+          fieldIssues: (parsed.fieldIssues as Array<{
+            field: string;
+            currentValue: unknown;
+            suggestedValue: unknown;
+            confidence: "high" | "medium" | "low";
+            reason: string;
+          }>) || [],
+          duplicateFields: (parsed.duplicateFields as Array<{
+            fields: string[];
+            suggestedCanonical: string;
+            reason: string;
+          }>) || [],
+          overallAssessment: parsed.overallAssessment as string | undefined,
+        };
+      } catch (error) {
+        console.error(`[Inngest QA] Error processing transaction ${transactionId}:`, error);
+        return {
+          success: false as const,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    });
+
+    // Step 3: Write results and update counters
+    const writeResult = await step.run("write-results", async () => {
+      if (qaResult.success) {
+        // Insert QA result
+        await db.insert(qaResults).values({
+          id: uuid(),
+          qaRunId,
+          transactionId,
+          sourceEmailId: emailId!,
+          hasIssues: qaResult.hasIssues,
+          fieldIssues: qaResult.fieldIssues,
+          duplicateFields: qaResult.duplicateFields,
+          overallAssessment: qaResult.overallAssessment || null,
+          status: "pending_review",
+        });
+      } else {
+        // Insert failed result
+        await db.insert(qaResults).values({
+          id: uuid(),
+          qaRunId,
+          transactionId,
+          sourceEmailId: emailId!,
+          hasIssues: false,
+          fieldIssues: [],
+          duplicateFields: [],
+          overallAssessment: `Error: ${qaResult.error}`,
+          status: "pending_review",
+        });
+      }
+
+      // Update QA run counters
+      const hasIssues = qaResult.success && qaResult.hasIssues;
+      const updateResult = await db
+        .update(qaRuns)
+        .set({
+          transactionsChecked: sql`${qaRuns.transactionsChecked} + 1`,
+          issuesFound: hasIssues
+            ? sql`${qaRuns.issuesFound} + 1`
+            : qaRuns.issuesFound,
+        })
+        .where(eq(qaRuns.id, qaRunId))
+        .returning({
+          transactionsChecked: qaRuns.transactionsChecked,
+          transactionsTotal: qaRuns.transactionsTotal,
+        });
+
+      const updated = updateResult[0];
+      const isComplete = updated?.transactionsChecked === totalTransactions;
+
+      return { isComplete, hasIssues };
+    });
+
+    // Step 4: If this was the last transaction, finalize the run
+    if (writeResult.isComplete) {
+      await step.run("finalize-qa-run", async () => {
+        await db
+          .update(qaRuns)
+          .set({
+            status: "completed",
+            completedAt: new Date(),
+          })
+          .where(eq(qaRuns.id, qaRunId));
+
+        console.log(`[Inngest QA] QA run ${qaRunId} complete`);
+      });
+    }
+
+    return {
+      transactionId,
+      success: qaResult.success,
+      hasIssues: writeResult.hasIssues,
+      isComplete: writeResult.isComplete,
+    };
+  }
+);
+
 // Export all functions
-export const functions = [extractionOrchestrator, extractionProcessEmail];
+export const functions = [
+  extractionOrchestrator,
+  extractionProcessEmail,
+  qaOrchestrator,
+  qaProcessTransaction,
+];

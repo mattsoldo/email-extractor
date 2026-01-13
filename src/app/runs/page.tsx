@@ -39,7 +39,20 @@ import {
   Trash2,
   ExternalLink,
   AlertTriangle,
+  Sparkles,
+  Loader2,
+  Plus,
+  Database,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
 import Link from "next/link";
 
 interface ExtractionRun {
@@ -110,6 +123,19 @@ export default function RunsPage() {
     totalTransactions: number;
     runNames: string[];
   } | null>(null);
+
+  // Flatten all runs state
+  const [flattenDialogOpen, setFlattenDialogOpen] = useState(false);
+  const [loadingFlattenPreview, setLoadingFlattenPreview] = useState(false);
+  const [flattening, setFlattening] = useState(false);
+  const [flattenPreview, setFlattenPreview] = useState<{
+    runs: Array<{ id: string; version: number; name: string | null; transactionCount: number }>;
+    newColumns: Array<{ columnName: string; originalKey: string; occurrences: number }>;
+    existingColumns: Array<{ columnName: string; originalKey: string; occurrences: number }>;
+    totalKeys: number;
+    totalRuns: number;
+  } | null>(null);
+  const [selectedFlattenFields, setSelectedFlattenFields] = useState<Set<string>>(new Set());
 
   // Fetch runs - only show loading spinner on initial load, not on refreshes
   const fetchRuns = useCallback(async (isInitialLoad = false) => {
@@ -338,6 +364,104 @@ export default function RunsPage() {
     }
   };
 
+  // Flatten all runs functions
+  const handleFlattenAllPreview = async () => {
+    setLoadingFlattenPreview(true);
+    try {
+      const res = await fetch("/api/runs/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "data_flatten_all",
+          preview: true,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to get preview");
+      }
+
+      const data = await res.json();
+      setFlattenPreview({
+        runs: data.runs,
+        newColumns: data.changes.newColumns,
+        existingColumns: data.changes.existingColumns,
+        totalKeys: data.changes.totalKeys,
+        totalRuns: data.changes.totalRuns,
+      });
+      // Select all fields by default
+      const allKeys = [
+        ...data.changes.newColumns.map((c: { originalKey: string }) => c.originalKey),
+        ...data.changes.existingColumns.map((c: { originalKey: string }) => c.originalKey),
+      ];
+      setSelectedFlattenFields(new Set(allKeys));
+      setFlattenDialogOpen(true);
+    } catch (error) {
+      console.error("Failed to get flatten preview:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to get preview");
+    } finally {
+      setLoadingFlattenPreview(false);
+    }
+  };
+
+  const toggleFlattenFieldSelection = (key: string) => {
+    setSelectedFlattenFields((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const selectAllFlattenFields = () => {
+    if (!flattenPreview) return;
+    const allKeys = [
+      ...flattenPreview.newColumns.map((c) => c.originalKey),
+      ...flattenPreview.existingColumns.map((c) => c.originalKey),
+    ];
+    setSelectedFlattenFields(new Set(allKeys));
+  };
+
+  const deselectAllFlattenFields = () => {
+    setSelectedFlattenFields(new Set());
+  };
+
+  const handleFlattenAllConfirm = async () => {
+    if (!flattenPreview || flattening || selectedFlattenFields.size === 0) return;
+
+    setFlattening(true);
+    try {
+      const res = await fetch("/api/runs/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "data_flatten_all",
+          selectedKeys: Array.from(selectedFlattenFields),
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to flatten runs");
+      }
+
+      const data = await res.json();
+      toast.success(`Created ${data.runs.length} flattened runs`);
+      setFlattenDialogOpen(false);
+      setFlattenPreview(null);
+      fetchRuns(true);
+    } catch (error) {
+      console.error("Failed to flatten runs:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to flatten runs");
+    } finally {
+      setFlattening(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       <Navigation />
@@ -361,6 +485,19 @@ export default function RunsPage() {
                 Delete {selectedRuns.size} Run{selectedRuns.size > 1 ? "s" : ""}
               </Button>
             )}
+            <Button
+              onClick={handleFlattenAllPreview}
+              variant="outline"
+              className="gap-2 border-purple-300 text-purple-700 hover:bg-purple-50"
+              disabled={loadingFlattenPreview}
+            >
+              {loadingFlattenPreview ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4" />
+              )}
+              Flatten All Runs
+            </Button>
             <Button onClick={() => fetchRuns()} variant="outline" className="gap-2">
               <RefreshCw className="h-4 w-4" />
               Refresh
@@ -670,6 +807,167 @@ export default function RunsPage() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* Flatten All Runs Dialog */}
+        <Dialog open={flattenDialogOpen} onOpenChange={setFlattenDialogOpen}>
+          <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-purple-600" />
+                Flatten All Runs
+              </DialogTitle>
+              <DialogDescription>
+                This will create new columns for all data fields and create a flattened version of each run.
+              </DialogDescription>
+            </DialogHeader>
+
+            {flattenPreview && (
+              <div className="space-y-4 py-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm text-gray-600">
+                    Will flatten <span className="font-semibold">{flattenPreview.totalRuns}</span> runs
+                    with <span className="font-semibold">{flattenPreview.totalKeys}</span> unique columns.
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={selectAllFlattenFields}
+                      className="text-xs h-7"
+                    >
+                      Select All
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={deselectAllFlattenFields}
+                      className="text-xs h-7"
+                    >
+                      Deselect All
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="text-xs text-gray-500">
+                  {selectedFlattenFields.size} of {flattenPreview.totalKeys} fields selected
+                </div>
+
+                {/* Runs to be flattened */}
+                <div className="space-y-2">
+                  <div className="text-sm font-medium text-gray-700">
+                    Runs to flatten:
+                  </div>
+                  <div className="bg-gray-50 border rounded-lg p-3 max-h-24 overflow-y-auto">
+                    <div className="flex flex-wrap gap-2">
+                      {flattenPreview.runs.map((run) => (
+                        <Badge key={run.id} variant="secondary" className="text-xs">
+                          v{run.version} ({run.transactionCount} txns)
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {flattenPreview.newColumns.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-green-700">
+                      <Plus className="h-4 w-4" />
+                      New Columns to Create ({flattenPreview.newColumns.filter(c => selectedFlattenFields.has(c.originalKey)).length}/{flattenPreview.newColumns.length})
+                    </div>
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-3 max-h-48 overflow-y-auto">
+                      <div className="space-y-1">
+                        {flattenPreview.newColumns.map((col) => (
+                          <label
+                            key={col.columnName}
+                            className="flex items-center justify-between text-sm cursor-pointer hover:bg-green-100 rounded px-1 py-0.5"
+                          >
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedFlattenFields.has(col.originalKey)}
+                                onChange={() => toggleFlattenFieldSelection(col.originalKey)}
+                                className="rounded border-green-400 text-green-600 focus:ring-green-500"
+                              />
+                              <code className="text-green-800">{col.columnName}</code>
+                            </div>
+                            <span className="text-gray-500">
+                              {col.occurrences} transactions
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {flattenPreview.existingColumns.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-blue-700">
+                      <Database className="h-4 w-4" />
+                      Existing Columns ({flattenPreview.existingColumns.filter(c => selectedFlattenFields.has(c.originalKey)).length}/{flattenPreview.existingColumns.length})
+                    </div>
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 max-h-32 overflow-y-auto">
+                      <div className="space-y-1">
+                        {flattenPreview.existingColumns.map((col) => (
+                          <label
+                            key={col.columnName}
+                            className="flex items-center justify-between text-sm cursor-pointer hover:bg-blue-100 rounded px-1 py-0.5"
+                          >
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedFlattenFields.has(col.originalKey)}
+                                onChange={() => toggleFlattenFieldSelection(col.originalKey)}
+                                className="rounded border-blue-400 text-blue-600 focus:ring-blue-500"
+                              />
+                              <code className="text-blue-800">{col.columnName}</code>
+                            </div>
+                            <span className="text-gray-500">
+                              {col.occurrences} transactions
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {flattenPreview.newColumns.length === 0 && flattenPreview.existingColumns.length === 0 && (
+                  <div className="text-sm text-gray-500 italic">
+                    No data keys found to flatten.
+                  </div>
+                )}
+              </div>
+            )}
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setFlattenDialogOpen(false)}
+                disabled={flattening}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleFlattenAllConfirm}
+                disabled={flattening || !flattenPreview || selectedFlattenFields.size === 0}
+                className="gap-2 bg-purple-600 hover:bg-purple-700"
+              >
+                {flattening ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4" />
+                    Flatten {flattenPreview?.totalRuns || 0} Runs
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );

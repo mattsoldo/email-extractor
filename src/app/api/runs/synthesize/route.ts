@@ -37,6 +37,14 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    if (type === "data_flatten_all") {
+      return handleDataFlattenAll({
+        setId: body.setId,
+        preview: preview === true,
+        selectedKeys: body.selectedKeys,
+      });
+    }
+
     return NextResponse.json(
       { error: `Unknown synthesis type: ${type}` },
       { status: 400 }
@@ -670,5 +678,364 @@ async function handleDataFlatten(params: DataFlattenParams) {
       columnsCreated: Array.from(columnsToCreate),
       totalFlattenedKeys: keysToFlatten.size,
     },
+  });
+}
+
+interface DataFlattenAllParams {
+  setId?: string;
+  preview?: boolean;
+  selectedKeys?: string[];
+}
+
+async function handleDataFlattenAll(params: DataFlattenAllParams) {
+  const { setId, preview = false, selectedKeys } = params;
+
+  // Get all non-synthesized, completed runs (optionally filtered by setId)
+  const runsQuery = db
+    .select()
+    .from(extractionRuns)
+    .where(
+      and(
+        eq(extractionRuns.status, "completed"),
+        eq(extractionRuns.isSynthesized, false),
+        setId ? eq(extractionRuns.setId, setId) : undefined
+      )
+    );
+
+  const allRuns = await runsQuery;
+
+  if (allRuns.length === 0) {
+    return NextResponse.json(
+      { error: "No runs found to flatten" },
+      { status: 404 }
+    );
+  }
+
+  // Helper to flatten data - extracts {key, value} objects from numeric indices
+  const flattenData = (data: Record<string, unknown>): Record<string, unknown> => {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (/^\d+$/.test(k) && v && typeof v === "object" && "key" in v && "value" in v) {
+        const obj = v as { key: string; value: unknown };
+        result[obj.key] = obj.value;
+      } else if (/^\d+$/.test(k) && v && typeof v === "object") {
+        continue;
+      } else {
+        result[k] = v;
+      }
+    }
+    return result;
+  };
+
+  // Step 1: Scan ALL transactions from ALL runs to discover all unique keys
+  const allKeys = new Set<string>();
+  const keyOccurrences: Record<string, number> = {};
+
+  for (const run of allRuns) {
+    const runTransactions = await db
+      .select({ data: transactions.data })
+      .from(transactions)
+      .where(eq(transactions.extractionRunId, run.id));
+
+    for (const t of runTransactions) {
+      const flattenedData = t.data ? flattenData(t.data as Record<string, unknown>) : {};
+      for (const key of Object.keys(flattenedData)) {
+        allKeys.add(key);
+        keyOccurrences[key] = (keyOccurrences[key] || 0) + 1;
+      }
+    }
+  }
+
+  if (allKeys.size === 0) {
+    return NextResponse.json(
+      { error: "No data fields found to flatten across all runs" },
+      { status: 400 }
+    );
+  }
+
+  // Step 2: Get existing columns in transactions table
+  const existingColumnsResult = await queryClient<{ column_name: string }[]>`
+    SELECT column_name FROM information_schema.columns WHERE table_name = 'transactions'
+  `;
+  const existingColumns = new Set(existingColumnsResult.map((r) => r.column_name));
+
+  // Step 3: Build mapping from keys to columns, grouping keys that map to same column
+  const columnToKeys = new Map<string, string[]>();
+
+  for (const key of allKeys) {
+    const columnName = toSnakeCase(key);
+    if (!columnToKeys.has(columnName)) {
+      columnToKeys.set(columnName, []);
+    }
+    columnToKeys.get(columnName)!.push(key);
+  }
+
+  // Determine which columns need to be created (deduplicated)
+  const columnsToCreate = new Set<string>();
+  for (const columnName of columnToKeys.keys()) {
+    if (!existingColumns.has(columnName)) {
+      columnsToCreate.add(columnName);
+    }
+  }
+
+  // If preview mode, return what would happen without making changes
+  if (preview) {
+    // Build column arrays, aggregating occurrences for keys that map to same column
+    const newColumnsArray = Array.from(columnsToCreate).map((col) => {
+      const originalKeys = columnToKeys.get(col) || [];
+      const totalOccurrences = originalKeys.reduce((sum, key) => sum + (keyOccurrences[key] || 0), 0);
+      return {
+        columnName: col,
+        originalKey: col,
+        originalKeys,
+        occurrences: totalOccurrences,
+      };
+    }).sort((a, b) => b.occurrences - a.occurrences);
+
+    const existingColumnNames = new Set<string>();
+    for (const key of allKeys) {
+      const colName = toSnakeCase(key);
+      if (existingColumns.has(colName)) {
+        existingColumnNames.add(colName);
+      }
+    }
+
+    const existingColumnsArray = Array.from(existingColumnNames).map((col) => {
+      const originalKeys = columnToKeys.get(col) || [];
+      const totalOccurrences = originalKeys.reduce((sum, key) => sum + (keyOccurrences[key] || 0), 0);
+      return {
+        columnName: col,
+        originalKey: col,
+        originalKeys,
+        occurrences: totalOccurrences,
+      };
+    }).sort((a, b) => b.occurrences - a.occurrences);
+
+    return NextResponse.json({
+      preview: true,
+      runs: allRuns.map((r) => ({
+        id: r.id,
+        version: r.version,
+        name: r.name,
+        transactionCount: r.transactionsCreated,
+      })),
+      changes: {
+        newColumns: newColumnsArray,
+        existingColumns: existingColumnsArray,
+        totalKeys: columnToKeys.size,
+        totalRuns: allRuns.length,
+      },
+    });
+  }
+
+  // Filter to only selected keys if specified
+  let keysToFlatten = allKeys;
+  if (selectedKeys && selectedKeys.length > 0) {
+    keysToFlatten = new Set(selectedKeys.filter((k) => allKeys.has(k)));
+    if (keysToFlatten.size === 0) {
+      return NextResponse.json(
+        { error: "None of the selected keys were found in the data" },
+        { status: 400 }
+      );
+    }
+  }
+
+  // Rebuild column mapping for selected keys only
+  const keyToColumn = new Map<string, string>();
+  const finalColumnToKeys = new Map<string, string[]>();
+
+  for (const key of keysToFlatten) {
+    const columnName = toSnakeCase(key);
+    keyToColumn.set(key, columnName);
+    if (!finalColumnToKeys.has(columnName)) {
+      finalColumnToKeys.set(columnName, []);
+    }
+    finalColumnToKeys.get(columnName)!.push(key);
+  }
+
+  // Recalculate columns to create based on selected keys
+  const finalColumnsToCreate = new Set<string>();
+  for (const columnName of finalColumnToKeys.keys()) {
+    if (!existingColumns.has(columnName)) {
+      finalColumnsToCreate.add(columnName);
+    }
+  }
+
+  // Step 4: Create new columns (all as TEXT for flexibility)
+  for (const columnName of finalColumnsToCreate) {
+    await queryClient.unsafe(
+      `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "${columnName}" TEXT`
+    );
+  }
+
+  // Step 5: For each run, create a flattened synthesized version
+  const createdRuns: Array<{
+    sourceRunId: string;
+    sourceVersion: number;
+    newRunId: string;
+    newVersion: number;
+    transactionsCreated: number;
+  }> = [];
+
+  // Get max version across all sets to avoid conflicts
+  const maxVersionResult = await db
+    .select({ maxVersion: max(extractionRuns.version) })
+    .from(extractionRuns);
+  let nextVersion = (maxVersionResult[0]?.maxVersion || 0) + 1;
+
+  // Base columns for INSERT
+  const baseColumns = [
+    "id", "type", "account_id", "to_account_id", "date", "amount", "currency",
+    "description", "symbol", "category", "quantity", "quantity_executed",
+    "quantity_remaining", "price", "execution_price", "price_type", "limit_price",
+    "fees", "contract_size", "option_type", "strike_price", "expiration_date",
+    "option_action", "security_name", "grant_number", "vest_date", "order_id",
+    "order_type", "order_quantity", "order_price", "order_status", "time_in_force",
+    "reference_number", "partially_executed", "execution_time", "data",
+    "unclassified_data", "source_email_id", "extraction_run_id", "run_completed",
+    "confidence", "llm_model", "source_transaction_id", "created_at"
+  ];
+
+  const dynamicColumns = Array.from(new Set(keyToColumn.values()));
+  const allColumns = [...baseColumns, ...dynamicColumns];
+  const columnList = allColumns.map(c => `"${c}"`).join(", ");
+
+  for (const sourceRun of allRuns) {
+    const synthesizedRunId = randomUUID();
+    const synthesizedRunName = `Flattened v${nextVersion} (from v${sourceRun.version})`;
+
+    // Get all transactions for this run with their data
+    const sourceTransactions = await db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.extractionRunId, sourceRun.id));
+
+    // Create the synthesized run record
+    await db.insert(extractionRuns).values({
+      id: synthesizedRunId,
+      setId: sourceRun.setId,
+      version: nextVersion,
+      name: synthesizedRunName,
+      description: `Data flattened from run v${sourceRun.version}. Flattened ${keysToFlatten.size} keys${finalColumnsToCreate.size > 0 ? `, created ${finalColumnsToCreate.size} new columns` : ""}`,
+      modelId: sourceRun.modelId,
+      promptId: sourceRun.promptId,
+      softwareVersion: sourceRun.softwareVersion,
+      emailsProcessed: sourceRun.emailsProcessed,
+      transactionsCreated: sourceTransactions.length,
+      informationalCount: 0,
+      errorCount: 0,
+      config: {
+        flattenedKeys: Array.from(keysToFlatten),
+        columnsCreated: Array.from(finalColumnsToCreate),
+        sourceRunVersion: sourceRun.version,
+      },
+      status: "completed",
+      startedAt: new Date(),
+      completedAt: new Date(),
+      isSynthesized: true,
+      synthesisType: "data_flatten",
+      sourceRunIds: [sourceRun.id],
+    });
+
+    // Insert transactions with flattened data
+    const BATCH_SIZE = 50;
+    for (let i = 0; i < sourceTransactions.length; i += BATCH_SIZE) {
+      const batch = sourceTransactions.slice(i, i + BATCH_SIZE);
+
+      for (const t of batch) {
+        const flatData = t.data ? flattenData(t.data as Record<string, unknown>) : {};
+        const newId = randomUUID();
+
+        const baseValues: (string | number | boolean | null | Date | Record<string, unknown>)[] = [
+          newId,
+          t.type,
+          t.accountId,
+          t.toAccountId,
+          t.date,
+          t.amount,
+          t.currency,
+          t.description,
+          t.symbol,
+          t.category,
+          t.quantity,
+          t.quantityExecuted,
+          t.quantityRemaining,
+          t.price,
+          t.executionPrice,
+          t.priceType,
+          t.limitPrice,
+          t.fees,
+          t.contractSize,
+          t.optionType,
+          t.strikePrice,
+          t.expirationDate,
+          t.optionAction,
+          t.securityName,
+          t.grantNumber,
+          t.vestDate,
+          t.orderId,
+          t.orderType,
+          t.orderQuantity,
+          t.orderPrice,
+          t.orderStatus,
+          t.timeInForce,
+          t.referenceNumber,
+          t.partiallyExecuted,
+          t.executionTime,
+          {},
+          t.unclassifiedData,
+          t.sourceEmailId,
+          synthesizedRunId,
+          true,
+          t.confidence,
+          t.llmModel,
+          t.id,
+          new Date(),
+        ];
+
+        // Add dynamic column values
+        for (const colName of dynamicColumns) {
+          const keysForCol = finalColumnToKeys.get(colName) || [];
+          let value: unknown = undefined;
+          for (const key of keysForCol) {
+            if (flatData[key] !== undefined) {
+              value = flatData[key];
+              break;
+            }
+          }
+          baseValues.push(value !== undefined ? String(value) : null);
+        }
+
+        const placeholders = baseValues.map((_, i) => `$${i + 1}`).join(", ");
+        const query = `INSERT INTO transactions (${columnList}) VALUES (${placeholders})`;
+
+        const pgValues = baseValues.map(v => {
+          if (v === null || v === undefined) return null;
+          if (v instanceof Date) return v.toISOString();
+          if (typeof v === "object") return JSON.stringify(v);
+          return v;
+        });
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await queryClient.unsafe(query, pgValues as any);
+      }
+    }
+
+    createdRuns.push({
+      sourceRunId: sourceRun.id,
+      sourceVersion: sourceRun.version,
+      newRunId: synthesizedRunId,
+      newVersion: nextVersion,
+      transactionsCreated: sourceTransactions.length,
+    });
+
+    nextVersion++;
+  }
+
+  return NextResponse.json({
+    message: `Created ${createdRuns.length} flattened runs`,
+    columnsCreated: Array.from(finalColumnsToCreate),
+    totalFlattenedKeys: keysToFlatten.size,
+    runs: createdRuns,
   });
 }

@@ -113,20 +113,67 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
     db.select().from(transactions).where(eq(transactions.extractionRunId, runBId)),
   ]);
 
-  // Map transactions by source email ID
-  const byEmailA = new Map<string, typeof transactions.$inferSelect>();
-  const byEmailB = new Map<string, typeof transactions.$inferSelect>();
+  // Map ALL transactions by source email ID (supports multi-transaction emails)
+  const allByEmailA = new Map<string, Array<typeof transactions.$inferSelect>>();
+  const allByEmailB = new Map<string, Array<typeof transactions.$inferSelect>>();
 
   for (const t of transactionsA) {
     if (t.sourceEmailId) {
-      byEmailA.set(t.sourceEmailId, t);
+      if (!allByEmailA.has(t.sourceEmailId)) {
+        allByEmailA.set(t.sourceEmailId, []);
+      }
+      allByEmailA.get(t.sourceEmailId)!.push(t);
     }
   }
   for (const t of transactionsB) {
     if (t.sourceEmailId) {
-      byEmailB.set(t.sourceEmailId, t);
+      if (!allByEmailB.has(t.sourceEmailId)) {
+        allByEmailB.set(t.sourceEmailId, []);
+      }
+      allByEmailB.get(t.sourceEmailId)!.push(t);
     }
   }
+
+  // Also create simple maps for backward compatibility (single transaction per email)
+  const byEmailA = new Map<string, typeof transactions.$inferSelect>();
+  const byEmailB = new Map<string, typeof transactions.$inferSelect>();
+
+  for (const [emailId, txns] of allByEmailA) {
+    if (txns.length === 1) {
+      byEmailA.set(emailId, txns[0]);
+    }
+  }
+  for (const [emailId, txns] of allByEmailB) {
+    if (txns.length === 1) {
+      byEmailB.set(emailId, txns[0]);
+    }
+  }
+
+  // Build a map of transaction ID to transaction for quick lookup
+  const txnById = new Map<string, typeof transactions.$inferSelect>();
+  for (const t of transactionsA) {
+    txnById.set(t.id, t);
+  }
+  for (const t of transactionsB) {
+    txnById.set(t.id, t);
+  }
+
+  // Helper to parse winner IDs (can be single ID, JSON array, or special value)
+  const parseWinnerIds = (stored: string | null): string[] => {
+    if (!stored) return [];
+    if (stored === "exclude" || stored === "discussion" || stored === "tie") {
+      return [stored];
+    }
+    if (stored.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // Not valid JSON
+      }
+    }
+    return [stored];
+  };
 
   // Get all emails with their winner designations and field overrides
   const allEmailIds = new Set([...byEmailA.keys(), ...byEmailB.keys()]);
@@ -210,40 +257,118 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
   };
 
   for (const emailId of allEmailIds) {
-    const tA = byEmailA.get(emailId);
+    const txnsA = allByEmailA.get(emailId) || [];
+    const txnsB = allByEmailB.get(emailId) || [];
+    const tA = byEmailA.get(emailId); // Single transaction (for backward compatibility)
     const tB = byEmailB.get(emailId);
-    const winner = emailWinners.get(emailId);
-    const overrides = emailOverrides.get(emailId);
+    const winner = emailWinners.get(emailId) || null;
+    const winnerIds = parseWinnerIds(winner);
+    const overrides = emailOverrides.get(emailId) || null;
 
-    // Skip excluded transactions - neither version should be included
-    if (winner === "exclude") {
+    // Check for special values
+    if (winnerIds.includes("exclude")) {
       transactionsExcluded++;
       continue;
     }
 
-    // Skip discussions - these are conversational emails, not transactions
-    if (winner === "discussion") {
-      transactionsExcluded++; // Count discussions in excluded for simplicity
+    if (winnerIds.includes("discussion")) {
+      transactionsExcluded++;
       continue;
     }
 
+    // Check if this is a multi-transaction email
+    const isMultiTransaction = txnsA.length > 1 || txnsB.length > 1;
+
+    if (isMultiTransaction) {
+      // Multi-transaction email: create all selected winners
+      // Filter to only actual transaction IDs (not special values)
+      const selectedTxnIds = winnerIds.filter(id =>
+        id !== "tie" && id !== "exclude" && id !== "discussion"
+      );
+
+      if (selectedTxnIds.length > 0) {
+        // Create a transaction for each selected winner
+        for (const txnId of selectedTxnIds) {
+          const txn = txnById.get(txnId);
+          if (txn) {
+            const newTransactionId = randomUUID();
+            const baseTransaction: typeof transactions.$inferInsert = {
+              id: newTransactionId,
+              type: txn.type,
+              accountId: txn.accountId,
+              toAccountId: txn.toAccountId,
+              date: txn.date,
+              amount: txn.amount,
+              currency: txn.currency,
+              description: txn.description,
+              symbol: txn.symbol,
+              category: txn.category,
+              quantity: txn.quantity,
+              quantityExecuted: txn.quantityExecuted,
+              quantityRemaining: txn.quantityRemaining,
+              price: txn.price,
+              executionPrice: txn.executionPrice,
+              priceType: txn.priceType,
+              limitPrice: txn.limitPrice,
+              fees: txn.fees,
+              contractSize: txn.contractSize,
+              optionType: txn.optionType,
+              strikePrice: txn.strikePrice,
+              expirationDate: txn.expirationDate,
+              optionAction: txn.optionAction,
+              securityName: txn.securityName,
+              orderId: txn.orderId,
+              orderType: txn.orderType,
+              orderQuantity: txn.orderQuantity,
+              orderPrice: txn.orderPrice,
+              orderStatus: txn.orderStatus,
+              timeInForce: txn.timeInForce,
+              referenceNumber: txn.referenceNumber,
+              partiallyExecuted: txn.partiallyExecuted,
+              executionTime: txn.executionTime,
+              confidence: txn.confidence,
+              data: txn.data as Record<string, unknown> | null,
+              sourceEmailId: emailId,
+              extractionRunId: synthesizedRunId,
+            };
+
+            // Apply field overrides if any
+            const finalTransaction = applyFieldOverrides(baseTransaction, overrides);
+            transactionsToCreate.push(finalTransaction);
+
+            // Track source
+            if (txnsA.some(t => t.id === txnId)) {
+              transactionsFromA++;
+            } else {
+              transactionsFromB++;
+            }
+          }
+        }
+      } else {
+        // No winners selected for multi-transaction email - skip or use fallback
+        transactionsNoWinner++;
+      }
+      continue; // Skip the single-transaction logic below
+    }
+
+    // Single-transaction email: use existing winner logic
     let winnerTransaction: typeof transactions.$inferSelect | null = null;
     let loserTransaction: typeof transactions.$inferSelect | null = null;
     let reason = "";
 
-    if (winner === "tie") {
+    if (winnerIds.includes("tie")) {
       // Use primary run for ties, secondary as loser for field merging
       winnerTransaction = primaryRunId === runAId ? tA || null : tB || null;
       loserTransaction = primaryRunId === runAId ? tB || null : tA || null;
       reason = "tie";
       transactionsTied++;
-    } else if (winner && tA && winner === tA.id) {
+    } else if (winnerIds.length > 0 && tA && winnerIds.includes(tA.id)) {
       // Run A was designated winner
       winnerTransaction = tA;
       loserTransaction = tB || null;
       reason = "winner_a";
       transactionsFromA++;
-    } else if (winner && tB && winner === tB.id) {
+    } else if (winnerIds.length > 0 && tB && winnerIds.includes(tB.id)) {
       // Run B was designated winner
       winnerTransaction = tB;
       loserTransaction = tA || null;

@@ -23,10 +23,37 @@ interface TransactionComparison {
 interface MultiTransactionEmail {
   emailId: string;
   emailSubject: string | null;
-  winnerTransactionId: string | null;
+  winnerTransactionIds: string[]; // Array of selected transaction IDs (can be multiple)
   fieldOverrides: Record<string, unknown> | null;
   runATransactions: Array<typeof transactions.$inferSelect>;
   runBTransactions: Array<typeof transactions.$inferSelect>;
+}
+
+// Helper to parse winner IDs from stored value (can be single ID, JSON array, or special value)
+function parseWinnerIds(stored: string | null): string[] {
+  if (!stored) return [];
+  // Special values are not transaction IDs
+  if (stored === "exclude" || stored === "discussion" || stored === "tie") {
+    return [stored];
+  }
+  // Try to parse as JSON array
+  if (stored.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // Not valid JSON, treat as single ID
+    }
+  }
+  // Single transaction ID
+  return [stored];
+}
+
+// Helper to serialize winner IDs for storage
+function serializeWinnerIds(ids: string[]): string | null {
+  if (ids.length === 0) return null;
+  if (ids.length === 1) return ids[0]; // Single ID or special value
+  return JSON.stringify(ids); // Multiple IDs as JSON array
 }
 
 // Fields to compare between transactions (excluding confidence per user request)
@@ -278,10 +305,11 @@ export async function GET(request: NextRequest) {
 
       if (isMultiTransaction) {
         // Add to multi-transaction list with all transactions
+        const winnerIds = parseWinnerIds(emailInfo?.winnerTransactionId || null);
         multiTransactionEmails.push({
           emailId,
           emailSubject: emailInfo?.subject || null,
-          winnerTransactionId: emailInfo?.winnerTransactionId || null,
+          winnerTransactionIds: winnerIds,
           fieldOverrides: (emailInfo?.fieldOverrides as Record<string, unknown>) || null,
           runATransactions: txnsA,
           runBTransactions: txnsB,
@@ -320,9 +348,13 @@ export async function GET(request: NextRequest) {
     const discussionsCount = comparisons.filter((c) => c.winnerTransactionId === "discussion").length;
 
     // Count multi-transaction email decisions
-    const multiTxnWinners = multiTransactionEmails.filter((m) => m.winnerTransactionId !== null && m.winnerTransactionId !== "exclude" && m.winnerTransactionId !== "discussion").length;
-    const multiTxnExcluded = multiTransactionEmails.filter((m) => m.winnerTransactionId === "exclude").length;
-    const multiTxnDiscussions = multiTransactionEmails.filter((m) => m.winnerTransactionId === "discussion").length;
+    const multiTxnWinners = multiTransactionEmails.filter((m) =>
+      m.winnerTransactionIds.length > 0 &&
+      !m.winnerTransactionIds.includes("exclude") &&
+      !m.winnerTransactionIds.includes("discussion")
+    ).length;
+    const multiTxnExcluded = multiTransactionEmails.filter((m) => m.winnerTransactionIds.includes("exclude")).length;
+    const multiTxnDiscussions = multiTransactionEmails.filter((m) => m.winnerTransactionIds.includes("discussion")).length;
 
     const summary = {
       total: comparisons.length,
@@ -359,10 +391,11 @@ export async function GET(request: NextRequest) {
 }
 
 // POST /api/compare - Set winner transaction for an email
+// For multi-transaction emails, use toggleWinner: true to add/remove from winners array
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { emailId, winnerTransactionId } = body;
+    const { emailId, winnerTransactionId, toggleWinner } = body;
 
     if (!emailId) {
       return NextResponse.json(
@@ -371,9 +404,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate email exists
+    // Validate email exists and get current winner
     const email = await db
-      .select()
+      .select({
+        id: emails.id,
+        winnerTransactionId: emails.winnerTransactionId,
+      })
       .from(emails)
       .where(eq(emails.id, emailId))
       .limit(1);
@@ -408,26 +444,59 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    let newWinnerValue: string | null;
+    let message: string;
+
+    if (toggleWinner && winnerTransactionId) {
+      // Toggle mode for multi-transaction emails
+      const currentWinners = parseWinnerIds(email[0].winnerTransactionId);
+
+      // Special values clear all transaction selections
+      if (winnerTransactionId === "exclude" || winnerTransactionId === "discussion") {
+        newWinnerValue = winnerTransactionId;
+        message = winnerTransactionId === "exclude" ? "Marked as excluded" : "Marked as discussion";
+      } else {
+        // Toggle transaction ID in/out of array
+        const idx = currentWinners.indexOf(winnerTransactionId);
+        if (idx >= 0) {
+          // Remove from winners
+          currentWinners.splice(idx, 1);
+          // Also remove special values if present (user is selecting transactions)
+          const filtered = currentWinners.filter(id => id !== "exclude" && id !== "discussion" && id !== "tie");
+          newWinnerValue = serializeWinnerIds(filtered);
+          message = "Winner removed";
+        } else {
+          // Add to winners (remove any special values first)
+          const filtered = currentWinners.filter(id => id !== "exclude" && id !== "discussion" && id !== "tie");
+          filtered.push(winnerTransactionId);
+          newWinnerValue = serializeWinnerIds(filtered);
+          message = "Winner added";
+        }
+      }
+    } else {
+      // Original single-winner mode
+      newWinnerValue = winnerTransactionId || null;
+      message = !winnerTransactionId
+        ? "Winner cleared"
+        : winnerTransactionId === "tie"
+          ? "Marked as tie"
+          : winnerTransactionId === "exclude"
+            ? "Marked as excluded"
+            : winnerTransactionId === "discussion"
+              ? "Marked as discussion"
+              : "Winner set";
+    }
+
     // Update the email's winner
     await db
       .update(emails)
-      .set({ winnerTransactionId: winnerTransactionId || null })
+      .set({ winnerTransactionId: newWinnerValue })
       .where(eq(emails.id, emailId));
-
-    const message = !winnerTransactionId
-      ? "Winner cleared"
-      : winnerTransactionId === "tie"
-        ? "Marked as tie"
-        : winnerTransactionId === "exclude"
-          ? "Marked as excluded"
-          : winnerTransactionId === "discussion"
-            ? "Marked as discussion"
-            : "Winner set";
 
     return NextResponse.json({
       message,
       emailId,
-      winnerTransactionId,
+      winnerTransactionId: newWinnerValue,
     });
   } catch (error) {
     console.error("Set winner error:", error);

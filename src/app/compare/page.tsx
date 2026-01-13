@@ -121,7 +121,7 @@ interface TransactionComparison {
 interface MultiTransactionEmail {
   emailId: string;
   emailSubject: string | null;
-  winnerTransactionId: string | null;
+  winnerTransactionIds: string[]; // Array of selected transaction IDs
   fieldOverrides: Record<string, unknown> | null;
   runATransactions: Transaction[];
   runBTransactions: Transaction[];
@@ -709,6 +709,66 @@ function ComparePageContent() {
       }
     } catch (error) {
       toast.error("Failed to set winner");
+    }
+  };
+
+  // Toggle a transaction as winner for multi-transaction emails (can select multiple)
+  const toggleMultiWinner = async (
+    emailId: string,
+    transactionId: string
+  ) => {
+    try {
+      const res = await fetch("/api/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          emailId,
+          winnerTransactionId: transactionId,
+          toggleWinner: true,
+        }),
+      });
+
+      if (res.ok) {
+        fetchComparison(true); // Preserve expanded state
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to toggle winner");
+      }
+    } catch (error) {
+      toast.error("Failed to toggle winner");
+    }
+  };
+
+  // Set special value (exclude/discussion) for multi-transaction emails
+  const setMultiSpecialValue = async (
+    emailId: string,
+    value: "exclude" | "discussion" | null
+  ) => {
+    try {
+      const res = await fetch("/api/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          emailId,
+          winnerTransactionId: value,
+          toggleWinner: true,
+        }),
+      });
+
+      if (res.ok) {
+        const message = !value
+          ? "Cleared"
+          : value === "exclude"
+            ? "Marked as excluded"
+            : "Marked as discussion";
+        toast.success(message);
+        fetchComparison(true);
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to update");
+      }
+    } catch (error) {
+      toast.error("Failed to update");
     }
   };
 
@@ -2324,19 +2384,19 @@ function ComparePageContent() {
                                 </Badge>
                               </div>
                               <div className="flex items-center gap-2">
-                                {email.winnerTransactionId && email.winnerTransactionId !== "exclude" && email.winnerTransactionId !== "discussion" && (
+                                {email.winnerTransactionIds.length > 0 && !email.winnerTransactionIds.includes("exclude") && !email.winnerTransactionIds.includes("discussion") && (
                                   <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 gap-1">
                                     <Trophy className="h-3 w-3" />
-                                    Winner Selected
+                                    {email.winnerTransactionIds.length} Selected
                                   </Badge>
                                 )}
-                                {email.winnerTransactionId === "exclude" && (
+                                {email.winnerTransactionIds.includes("exclude") && (
                                   <Badge variant="secondary" className="bg-red-100 text-red-800 gap-1">
                                     <Ban className="h-3 w-3" />
                                     Excluded
                                   </Badge>
                                 )}
-                                {email.winnerTransactionId === "discussion" && (
+                                {email.winnerTransactionIds.includes("discussion") && (
                                   <Badge variant="secondary" className="bg-indigo-100 text-indigo-800 gap-1">
                                     <MessageSquare className="h-3 w-3" />
                                     Discussion
@@ -2348,47 +2408,58 @@ function ComparePageContent() {
                           <CardContent className="pt-0 pb-3">
                             {/* Email preview */}
                             {expandedEmailPreviews.has(email.emailId) && (
-                              <div className="mb-4 p-3 bg-white rounded-md border border-gray-200">
+                              <div className="mb-4 border rounded-lg overflow-hidden bg-white">
+                                <div className="px-3 py-2 bg-gray-100 border-b text-sm font-medium text-gray-700">
+                                  Original Email Content
+                                </div>
                                 {loadingEmails.has(email.emailId) ? (
-                                  <div className="flex items-center gap-2 text-sm text-gray-500">
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    Loading email...
+                                  <div className="flex items-center justify-center py-12">
+                                    <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                                    <span className="ml-2 text-gray-500">Loading email...</span>
                                   </div>
                                 ) : emailContents.has(email.emailId) ? (
-                                  <div className="max-h-64 overflow-y-auto">
+                                  <div className="max-h-96 overflow-auto">
                                     {emailContents.get(email.emailId)?.bodyHtml ? (
-                                      <div
-                                        className="text-sm prose prose-sm max-w-none"
-                                        dangerouslySetInnerHTML={{
-                                          __html: emailContents.get(email.emailId)?.bodyHtml || "",
-                                        }}
+                                      <iframe
+                                        srcDoc={emailContents.get(email.emailId)?.bodyHtml || ""}
+                                        sandbox="allow-same-origin"
+                                        className="w-full min-h-[300px] border-0"
+                                        style={{ height: "400px" }}
+                                        title="Email content"
                                       />
-                                    ) : (
-                                      <pre className="text-sm whitespace-pre-wrap font-sans">
-                                        {emailContents.get(email.emailId)?.bodyText || "No content"}
+                                    ) : emailContents.get(email.emailId)?.bodyText ? (
+                                      <pre className="p-4 text-sm whitespace-pre-wrap font-mono text-gray-700">
+                                        {emailContents.get(email.emailId)?.bodyText}
                                       </pre>
+                                    ) : (
+                                      <div className="p-4 text-sm text-gray-500 italic">
+                                        No email content available
+                                      </div>
                                     )}
                                   </div>
                                 ) : (
-                                  <div className="text-sm text-gray-500">Failed to load email content</div>
+                                  <div className="p-4 text-sm text-gray-500 italic">
+                                    Failed to load email content
+                                  </div>
                                 )}
                               </div>
                             )}
+                            <p className="text-xs text-gray-500 mb-2">Click transactions to toggle selection. Multiple can be selected.</p>
                             <div className="grid grid-cols-2 gap-4">
                               <div>
-                                <div className="text-xs font-medium text-blue-700 mb-2">{runALabel} Transactions - Click to select as winner</div>
+                                <div className="text-xs font-medium text-blue-700 mb-2">{runALabel} Transactions</div>
                                 {email.runATransactions.map((txn) => {
-                                  const isWinner = email.winnerTransactionId === txn.id;
+                                  const isSelected = email.winnerTransactionIds.includes(txn.id);
                                   return (
                                     <div
                                       key={txn.id}
                                       className={cn(
                                         "text-xs p-2 rounded mb-1 cursor-pointer transition-all",
-                                        isWinner
+                                        isSelected
                                           ? "bg-blue-200 border-2 border-blue-500 ring-2 ring-blue-300"
                                           : "bg-blue-50 hover:bg-blue-100 border border-transparent"
                                       )}
-                                      onClick={() => designateWinner(email.emailId, txn.id)}
+                                      onClick={() => toggleMultiWinner(email.emailId, txn.id)}
                                     >
                                       <div className="flex items-center justify-between">
                                         <div>
@@ -2396,26 +2467,26 @@ function ComparePageContent() {
                                           {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
                                           {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
                                         </div>
-                                        {isWinner && <Trophy className="h-3 w-3 text-blue-700" />}
+                                        {isSelected && <CheckCircle2 className="h-3 w-3 text-blue-700" />}
                                       </div>
                                     </div>
                                   );
                                 })}
                               </div>
                               <div>
-                                <div className="text-xs font-medium text-purple-700 mb-2">{runBLabel} Transactions - Click to select as winner</div>
+                                <div className="text-xs font-medium text-purple-700 mb-2">{runBLabel} Transactions</div>
                                 {email.runBTransactions.map((txn) => {
-                                  const isWinner = email.winnerTransactionId === txn.id;
+                                  const isSelected = email.winnerTransactionIds.includes(txn.id);
                                   return (
                                     <div
                                       key={txn.id}
                                       className={cn(
                                         "text-xs p-2 rounded mb-1 cursor-pointer transition-all",
-                                        isWinner
+                                        isSelected
                                           ? "bg-purple-200 border-2 border-purple-500 ring-2 ring-purple-300"
                                           : "bg-purple-50 hover:bg-purple-100 border border-transparent"
                                       )}
-                                      onClick={() => designateWinner(email.emailId, txn.id)}
+                                      onClick={() => toggleMultiWinner(email.emailId, txn.id)}
                                     >
                                       <div className="flex items-center justify-between">
                                         <div>
@@ -2423,7 +2494,7 @@ function ComparePageContent() {
                                           {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
                                           {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
                                         </div>
-                                        {isWinner && <Trophy className="h-3 w-3 text-purple-700" />}
+                                        {isSelected && <CheckCircle2 className="h-3 w-3 text-purple-700" />}
                                       </div>
                                     </div>
                                   );
@@ -2434,34 +2505,34 @@ function ComparePageContent() {
                               <span className="text-xs text-gray-500">Actions:</span>
                               <Button
                                 size="sm"
-                                variant={email.winnerTransactionId === "discussion" ? "default" : "outline"}
+                                variant={email.winnerTransactionIds.includes("discussion") ? "default" : "outline"}
                                 className={`h-6 text-xs ${
-                                  email.winnerTransactionId === "discussion"
+                                  email.winnerTransactionIds.includes("discussion")
                                     ? "bg-indigo-600 hover:bg-indigo-700"
                                     : "border-indigo-300 text-indigo-700"
                                 }`}
-                                onClick={() => designateWinner(email.emailId, "discussion")}
+                                onClick={() => setMultiSpecialValue(email.emailId, "discussion")}
                               >
                                 Discussion
                               </Button>
                               <Button
                                 size="sm"
-                                variant={email.winnerTransactionId === "exclude" ? "default" : "outline"}
+                                variant={email.winnerTransactionIds.includes("exclude") ? "default" : "outline"}
                                 className={`h-6 text-xs ${
-                                  email.winnerTransactionId === "exclude"
+                                  email.winnerTransactionIds.includes("exclude")
                                     ? "bg-red-600 hover:bg-red-700"
                                     : "border-red-300 text-red-700"
                                 }`}
-                                onClick={() => designateWinner(email.emailId, "exclude")}
+                                onClick={() => setMultiSpecialValue(email.emailId, "exclude")}
                               >
                                 Exclude
                               </Button>
-                              {email.winnerTransactionId && (
+                              {email.winnerTransactionIds.length > 0 && (
                                 <Button
                                   size="sm"
                                   variant="ghost"
                                   className="h-6 text-xs text-gray-500"
-                                  onClick={() => designateWinner(email.emailId, null)}
+                                  onClick={() => setMultiSpecialValue(email.emailId, null)}
                                 >
                                   Clear
                                 </Button>
@@ -2513,19 +2584,19 @@ function ComparePageContent() {
                                 </Badge>
                               </div>
                               <div className="flex items-center gap-2">
-                                {email.winnerTransactionId && email.winnerTransactionId !== "exclude" && email.winnerTransactionId !== "discussion" && (
+                                {email.winnerTransactionIds.length > 0 && !email.winnerTransactionIds.includes("exclude") && !email.winnerTransactionIds.includes("discussion") && (
                                   <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 gap-1">
                                     <Trophy className="h-3 w-3" />
-                                    Winner Selected
+                                    {email.winnerTransactionIds.length} Selected
                                   </Badge>
                                 )}
-                                {email.winnerTransactionId === "exclude" && (
+                                {email.winnerTransactionIds.includes("exclude") && (
                                   <Badge variant="secondary" className="bg-red-100 text-red-800 gap-1">
                                     <Ban className="h-3 w-3" />
                                     Excluded
                                   </Badge>
                                 )}
-                                {email.winnerTransactionId === "discussion" && (
+                                {email.winnerTransactionIds.includes("discussion") && (
                                   <Badge variant="secondary" className="bg-indigo-100 text-indigo-800 gap-1">
                                     <MessageSquare className="h-3 w-3" />
                                     Discussion
@@ -2537,50 +2608,61 @@ function ComparePageContent() {
                           <CardContent className="pt-0 pb-3">
                             {/* Email preview */}
                             {expandedEmailPreviews.has(email.emailId) && (
-                              <div className="mb-4 p-3 bg-white rounded-md border border-gray-200">
+                              <div className="mb-4 border rounded-lg overflow-hidden bg-white">
+                                <div className="px-3 py-2 bg-gray-100 border-b text-sm font-medium text-gray-700">
+                                  Original Email Content
+                                </div>
                                 {loadingEmails.has(email.emailId) ? (
-                                  <div className="flex items-center gap-2 text-sm text-gray-500">
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    Loading email...
+                                  <div className="flex items-center justify-center py-12">
+                                    <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                                    <span className="ml-2 text-gray-500">Loading email...</span>
                                   </div>
                                 ) : emailContents.has(email.emailId) ? (
-                                  <div className="max-h-64 overflow-y-auto">
+                                  <div className="max-h-96 overflow-auto">
                                     {emailContents.get(email.emailId)?.bodyHtml ? (
-                                      <div
-                                        className="text-sm prose prose-sm max-w-none"
-                                        dangerouslySetInnerHTML={{
-                                          __html: emailContents.get(email.emailId)?.bodyHtml || "",
-                                        }}
+                                      <iframe
+                                        srcDoc={emailContents.get(email.emailId)?.bodyHtml || ""}
+                                        sandbox="allow-same-origin"
+                                        className="w-full min-h-[300px] border-0"
+                                        style={{ height: "400px" }}
+                                        title="Email content"
                                       />
-                                    ) : (
-                                      <pre className="text-sm whitespace-pre-wrap font-sans">
-                                        {emailContents.get(email.emailId)?.bodyText || "No content"}
+                                    ) : emailContents.get(email.emailId)?.bodyText ? (
+                                      <pre className="p-4 text-sm whitespace-pre-wrap font-mono text-gray-700">
+                                        {emailContents.get(email.emailId)?.bodyText}
                                       </pre>
+                                    ) : (
+                                      <div className="p-4 text-sm text-gray-500 italic">
+                                        No email content available
+                                      </div>
                                     )}
                                   </div>
                                 ) : (
-                                  <div className="text-sm text-gray-500">Failed to load email content</div>
+                                  <div className="p-4 text-sm text-gray-500 italic">
+                                    Failed to load email content
+                                  </div>
                                 )}
                               </div>
                             )}
+                            <p className="text-xs text-gray-500 mb-2">Click transactions to toggle selection. Multiple can be selected.</p>
                             <div className="grid grid-cols-2 gap-4">
                               <div>
-                                <div className="text-xs font-medium text-blue-700 mb-2">{runALabel} Transactions - Click to select as winner</div>
+                                <div className="text-xs font-medium text-blue-700 mb-2">{runALabel} Transactions</div>
                                 {email.runATransactions.length === 0 ? (
                                   <div className="text-xs text-gray-400 italic">No transactions</div>
                                 ) : (
                                   email.runATransactions.map((txn) => {
-                                    const isWinner = email.winnerTransactionId === txn.id;
+                                    const isSelected = email.winnerTransactionIds.includes(txn.id);
                                     return (
                                       <div
                                         key={txn.id}
                                         className={cn(
                                           "text-xs p-2 rounded mb-1 cursor-pointer transition-all",
-                                          isWinner
+                                          isSelected
                                             ? "bg-blue-200 border-2 border-blue-500 ring-2 ring-blue-300"
                                             : "bg-blue-50 hover:bg-blue-100 border border-transparent"
                                         )}
-                                        onClick={() => designateWinner(email.emailId, txn.id)}
+                                        onClick={() => toggleMultiWinner(email.emailId, txn.id)}
                                       >
                                         <div className="flex items-center justify-between">
                                           <div>
@@ -2588,7 +2670,7 @@ function ComparePageContent() {
                                             {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
                                             {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
                                           </div>
-                                          {isWinner && <Trophy className="h-3 w-3 text-blue-700" />}
+                                          {isSelected && <CheckCircle2 className="h-3 w-3 text-blue-700" />}
                                         </div>
                                       </div>
                                     );
@@ -2596,22 +2678,22 @@ function ComparePageContent() {
                                 )}
                               </div>
                               <div>
-                                <div className="text-xs font-medium text-purple-700 mb-2">{runBLabel} Transactions - Click to select as winner</div>
+                                <div className="text-xs font-medium text-purple-700 mb-2">{runBLabel} Transactions</div>
                                 {email.runBTransactions.length === 0 ? (
                                   <div className="text-xs text-gray-400 italic">No transactions</div>
                                 ) : (
                                   email.runBTransactions.map((txn) => {
-                                    const isWinner = email.winnerTransactionId === txn.id;
+                                    const isSelected = email.winnerTransactionIds.includes(txn.id);
                                     return (
                                       <div
                                         key={txn.id}
                                         className={cn(
                                           "text-xs p-2 rounded mb-1 cursor-pointer transition-all",
-                                          isWinner
+                                          isSelected
                                             ? "bg-purple-200 border-2 border-purple-500 ring-2 ring-purple-300"
                                             : "bg-purple-50 hover:bg-purple-100 border border-transparent"
                                         )}
-                                        onClick={() => designateWinner(email.emailId, txn.id)}
+                                        onClick={() => toggleMultiWinner(email.emailId, txn.id)}
                                       >
                                         <div className="flex items-center justify-between">
                                           <div>
@@ -2619,7 +2701,7 @@ function ComparePageContent() {
                                             {txn.amount && <span className="ml-2">{txn.amount} {txn.currency}</span>}
                                             {txn.symbol && <span className="ml-2 text-gray-500">{txn.symbol}</span>}
                                           </div>
-                                          {isWinner && <Trophy className="h-3 w-3 text-purple-700" />}
+                                          {isSelected && <CheckCircle2 className="h-3 w-3 text-purple-700" />}
                                         </div>
                                       </div>
                                     );
@@ -2631,34 +2713,34 @@ function ComparePageContent() {
                               <span className="text-xs text-gray-500">Actions:</span>
                               <Button
                                 size="sm"
-                                variant={email.winnerTransactionId === "discussion" ? "default" : "outline"}
+                                variant={email.winnerTransactionIds.includes("discussion") ? "default" : "outline"}
                                 className={`h-6 text-xs ${
-                                  email.winnerTransactionId === "discussion"
+                                  email.winnerTransactionIds.includes("discussion")
                                     ? "bg-indigo-600 hover:bg-indigo-700"
                                     : "border-indigo-300 text-indigo-700"
                                 }`}
-                                onClick={() => designateWinner(email.emailId, "discussion")}
+                                onClick={() => setMultiSpecialValue(email.emailId, "discussion")}
                               >
                                 Discussion
                               </Button>
                               <Button
                                 size="sm"
-                                variant={email.winnerTransactionId === "exclude" ? "default" : "outline"}
+                                variant={email.winnerTransactionIds.includes("exclude") ? "default" : "outline"}
                                 className={`h-6 text-xs ${
-                                  email.winnerTransactionId === "exclude"
+                                  email.winnerTransactionIds.includes("exclude")
                                     ? "bg-red-600 hover:bg-red-700"
                                     : "border-red-300 text-red-700"
                                 }`}
-                                onClick={() => designateWinner(email.emailId, "exclude")}
+                                onClick={() => setMultiSpecialValue(email.emailId, "exclude")}
                               >
                                 Exclude
                               </Button>
-                              {email.winnerTransactionId && (
+                              {email.winnerTransactionIds.length > 0 && (
                                 <Button
                                   size="sm"
                                   variant="ghost"
                                   className="h-6 text-xs text-gray-500"
-                                  onClick={() => designateWinner(email.emailId, null)}
+                                  onClick={() => setMultiSpecialValue(email.emailId, null)}
                                 >
                                   Clear
                                 </Button>

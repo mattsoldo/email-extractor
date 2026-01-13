@@ -2358,18 +2358,6 @@ function ComparePageContent() {
                           <CardHeader className="py-3">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-6 w-6 p-0"
-                                  onClick={() => toggleEmailPreview(email.emailId)}
-                                >
-                                  {expandedEmailPreviews.has(email.emailId) ? (
-                                    <ChevronUp className="h-4 w-4" />
-                                  ) : (
-                                    <Eye className="h-4 w-4" />
-                                  )}
-                                </Button>
                                 <span className="font-medium text-sm truncate max-w-md">
                                   {email.emailSubject || "No subject"}
                                 </span>
@@ -2406,44 +2394,6 @@ function ComparePageContent() {
                             </div>
                           </CardHeader>
                           <CardContent className="pt-0 pb-3">
-                            {/* Email preview */}
-                            {expandedEmailPreviews.has(email.emailId) && (
-                              <div className="mb-4 border rounded-lg overflow-hidden bg-white">
-                                <div className="px-3 py-2 bg-gray-100 border-b text-sm font-medium text-gray-700">
-                                  Original Email Content
-                                </div>
-                                {loadingEmails.has(email.emailId) ? (
-                                  <div className="flex items-center justify-center py-12">
-                                    <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
-                                    <span className="ml-2 text-gray-500">Loading email...</span>
-                                  </div>
-                                ) : emailContents.has(email.emailId) ? (
-                                  <div className="max-h-96 overflow-auto">
-                                    {emailContents.get(email.emailId)?.bodyHtml ? (
-                                      <iframe
-                                        srcDoc={emailContents.get(email.emailId)?.bodyHtml || ""}
-                                        sandbox="allow-same-origin"
-                                        className="w-full min-h-[300px] border-0"
-                                        style={{ height: "400px" }}
-                                        title="Email content"
-                                      />
-                                    ) : emailContents.get(email.emailId)?.bodyText ? (
-                                      <pre className="p-4 text-sm whitespace-pre-wrap font-mono text-gray-700">
-                                        {emailContents.get(email.emailId)?.bodyText}
-                                      </pre>
-                                    ) : (
-                                      <div className="p-4 text-sm text-gray-500 italic">
-                                        No email content available
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <div className="p-4 text-sm text-gray-500 italic">
-                                    Failed to load email content
-                                  </div>
-                                )}
-                              </div>
-                            )}
                             <p className="text-xs text-gray-500 mb-2">Click transactions to toggle selection. Multiple can be selected.</p>
                             <div className="grid grid-cols-2 gap-4">
                               <div>
@@ -2501,7 +2451,68 @@ function ComparePageContent() {
                                 })}
                               </div>
                             </div>
-                            <div className="flex items-center gap-2 mt-3 pt-3 border-t">
+
+                            {/* View Email button and preview */}
+                            <div className="mt-4">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-2 mb-3"
+                                onClick={() => toggleEmailPreview(email.emailId)}
+                              >
+                                {loadingEmails.has(email.emailId) ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Mail className="h-4 w-4" />
+                                )}
+                                {expandedEmailPreviews.has(email.emailId) ? "Hide" : "View"} Original Email
+                                {expandedEmailPreviews.has(email.emailId) ? (
+                                  <ChevronUp className="h-4 w-4" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4" />
+                                )}
+                              </Button>
+
+                              {expandedEmailPreviews.has(email.emailId) && (
+                                <div className="mb-4 border rounded-lg overflow-hidden bg-white">
+                                  <div className="px-3 py-2 bg-gray-100 border-b text-sm font-medium text-gray-700">
+                                    Original Email Content
+                                  </div>
+                                  {loadingEmails.has(email.emailId) ? (
+                                    <div className="flex items-center justify-center py-12">
+                                      <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                                      <span className="ml-2 text-gray-500">Loading email...</span>
+                                    </div>
+                                  ) : emailContents.has(email.emailId) ? (
+                                    <div className="max-h-96 overflow-auto">
+                                      {emailContents.get(email.emailId)?.bodyHtml ? (
+                                        <iframe
+                                          srcDoc={emailContents.get(email.emailId)?.bodyHtml || ""}
+                                          sandbox="allow-same-origin"
+                                          className="w-full min-h-[300px] border-0"
+                                          style={{ height: "400px" }}
+                                          title="Email content"
+                                        />
+                                      ) : emailContents.get(email.emailId)?.bodyText ? (
+                                        <pre className="p-4 text-sm whitespace-pre-wrap font-mono text-gray-700">
+                                          {emailContents.get(email.emailId)?.bodyText}
+                                        </pre>
+                                      ) : (
+                                        <div className="p-4 text-sm text-gray-500 italic">
+                                          No email content available
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <div className="p-4 text-sm text-gray-500 italic">
+                                      Failed to load email content
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2 pt-3 border-t">
                               <span className="text-xs text-gray-500">Actions:</span>
                               <Button
                                 size="sm"
@@ -2561,18 +2572,6 @@ function ComparePageContent() {
                           <CardHeader className="py-3">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-6 w-6 p-0"
-                                  onClick={() => toggleEmailPreview(email.emailId)}
-                                >
-                                  {expandedEmailPreviews.has(email.emailId) ? (
-                                    <ChevronUp className="h-4 w-4" />
-                                  ) : (
-                                    <Eye className="h-4 w-4" />
-                                  )}
-                                </Button>
                                 <span className="font-medium text-sm truncate max-w-md">
                                   {email.emailSubject || "No subject"}
                                 </span>
@@ -2606,44 +2605,6 @@ function ComparePageContent() {
                             </div>
                           </CardHeader>
                           <CardContent className="pt-0 pb-3">
-                            {/* Email preview */}
-                            {expandedEmailPreviews.has(email.emailId) && (
-                              <div className="mb-4 border rounded-lg overflow-hidden bg-white">
-                                <div className="px-3 py-2 bg-gray-100 border-b text-sm font-medium text-gray-700">
-                                  Original Email Content
-                                </div>
-                                {loadingEmails.has(email.emailId) ? (
-                                  <div className="flex items-center justify-center py-12">
-                                    <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
-                                    <span className="ml-2 text-gray-500">Loading email...</span>
-                                  </div>
-                                ) : emailContents.has(email.emailId) ? (
-                                  <div className="max-h-96 overflow-auto">
-                                    {emailContents.get(email.emailId)?.bodyHtml ? (
-                                      <iframe
-                                        srcDoc={emailContents.get(email.emailId)?.bodyHtml || ""}
-                                        sandbox="allow-same-origin"
-                                        className="w-full min-h-[300px] border-0"
-                                        style={{ height: "400px" }}
-                                        title="Email content"
-                                      />
-                                    ) : emailContents.get(email.emailId)?.bodyText ? (
-                                      <pre className="p-4 text-sm whitespace-pre-wrap font-mono text-gray-700">
-                                        {emailContents.get(email.emailId)?.bodyText}
-                                      </pre>
-                                    ) : (
-                                      <div className="p-4 text-sm text-gray-500 italic">
-                                        No email content available
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <div className="p-4 text-sm text-gray-500 italic">
-                                    Failed to load email content
-                                  </div>
-                                )}
-                              </div>
-                            )}
                             <p className="text-xs text-gray-500 mb-2">Click transactions to toggle selection. Multiple can be selected.</p>
                             <div className="grid grid-cols-2 gap-4">
                               <div>
@@ -2709,7 +2670,68 @@ function ComparePageContent() {
                                 )}
                               </div>
                             </div>
-                            <div className="flex items-center gap-2 mt-3 pt-3 border-t">
+
+                            {/* View Email button and preview */}
+                            <div className="mt-4">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-2 mb-3"
+                                onClick={() => toggleEmailPreview(email.emailId)}
+                              >
+                                {loadingEmails.has(email.emailId) ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Mail className="h-4 w-4" />
+                                )}
+                                {expandedEmailPreviews.has(email.emailId) ? "Hide" : "View"} Original Email
+                                {expandedEmailPreviews.has(email.emailId) ? (
+                                  <ChevronUp className="h-4 w-4" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4" />
+                                )}
+                              </Button>
+
+                              {expandedEmailPreviews.has(email.emailId) && (
+                                <div className="mb-4 border rounded-lg overflow-hidden bg-white">
+                                  <div className="px-3 py-2 bg-gray-100 border-b text-sm font-medium text-gray-700">
+                                    Original Email Content
+                                  </div>
+                                  {loadingEmails.has(email.emailId) ? (
+                                    <div className="flex items-center justify-center py-12">
+                                      <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                                      <span className="ml-2 text-gray-500">Loading email...</span>
+                                    </div>
+                                  ) : emailContents.has(email.emailId) ? (
+                                    <div className="max-h-96 overflow-auto">
+                                      {emailContents.get(email.emailId)?.bodyHtml ? (
+                                        <iframe
+                                          srcDoc={emailContents.get(email.emailId)?.bodyHtml || ""}
+                                          sandbox="allow-same-origin"
+                                          className="w-full min-h-[300px] border-0"
+                                          style={{ height: "400px" }}
+                                          title="Email content"
+                                        />
+                                      ) : emailContents.get(email.emailId)?.bodyText ? (
+                                        <pre className="p-4 text-sm whitespace-pre-wrap font-mono text-gray-700">
+                                          {emailContents.get(email.emailId)?.bodyText}
+                                        </pre>
+                                      ) : (
+                                        <div className="p-4 text-sm text-gray-500 italic">
+                                          No email content available
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <div className="p-4 text-sm text-gray-500 italic">
+                                      Failed to load email content
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-2 pt-3 border-t">
                               <span className="text-xs text-gray-500">Actions:</span>
                               <Button
                                 size="sm"

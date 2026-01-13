@@ -243,6 +243,72 @@ export async function PUT(
     const body = await request.json();
     const { action, field } = body;
 
+    // Reset a single result
+    if (action === "resetResult" && body.resultId) {
+      await db
+        .update(qaResults)
+        .set({
+          status: "pending_review",
+          acceptedFields: null,
+          acceptedMerges: null,
+          reviewedAt: null,
+        })
+        .where(
+          and(eq(qaResults.id, body.resultId), eq(qaResults.qaRunId, id))
+        );
+
+      return NextResponse.json({
+        success: true,
+        message: "Result reset to pending",
+      });
+    }
+
+    // Reset all decisions
+    if (action === "resetAll") {
+      const result = await db
+        .update(qaResults)
+        .set({
+          status: "pending_review",
+          acceptedFields: null,
+          acceptedMerges: null,
+          reviewedAt: null,
+        })
+        .where(
+          and(
+            eq(qaResults.qaRunId, id),
+            eq(qaResults.hasIssues, true)
+          )
+        );
+
+      return NextResponse.json({
+        success: true,
+        message: "All decisions reset",
+      });
+    }
+
+    // Reset by status (accepted, rejected, or partial)
+    if (action === "resetByStatus" && body.status) {
+      await db
+        .update(qaResults)
+        .set({
+          status: "pending_review",
+          acceptedFields: null,
+          acceptedMerges: null,
+          reviewedAt: null,
+        })
+        .where(
+          and(
+            eq(qaResults.qaRunId, id),
+            eq(qaResults.status, body.status)
+          )
+        );
+
+      return NextResponse.json({
+        success: true,
+        message: `Reset all ${body.status} decisions`,
+      });
+    }
+
     if (action === "acceptFieldGroup" && field) {
       // Get all pending results that have issues with this field
       const pendingResults = await db

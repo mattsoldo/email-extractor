@@ -24,6 +24,7 @@ import {
   Check,
   X,
   Merge,
+  RotateCcw,
 } from "lucide-react";
 import {
   Dialog,
@@ -133,6 +134,8 @@ export default function QAReviewPage({
   const [onlyMultiTransaction, setOnlyMultiTransaction] = useState(false);
   const [excludeMultiTransaction, setExcludeMultiTransaction] = useState(false);
   const [acceptingField, setAcceptingField] = useState<string | null>(null);
+  const [resettingResultId, setResettingResultId] = useState<string | null>(null);
+  const [resettingAll, setResettingAll] = useState(false);
 
   // Expanded states
   const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
@@ -434,6 +437,70 @@ export default function QAReviewPage({
     }
   };
 
+  const resetResult = async (resultId: string) => {
+    setResettingResultId(resultId);
+    try {
+      const res = await fetch(`/api/qa/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "resetResult",
+          resultId,
+        }),
+      });
+
+      if (res.ok) {
+        toast.success("Decision reset");
+        // Clear local state for this result
+        setLocalAcceptedFields((prev) => {
+          const newState = { ...prev };
+          delete newState[resultId];
+          return newState;
+        });
+        setLocalAcceptedMerges((prev) => {
+          const newState = { ...prev };
+          delete newState[resultId];
+          return newState;
+        });
+        fetchResults();
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to reset");
+      }
+    } catch (error) {
+      toast.error("Failed to reset");
+    } finally {
+      setResettingResultId(null);
+    }
+  };
+
+  const resetAllDecisions = async () => {
+    setResettingAll(true);
+    try {
+      const res = await fetch(`/api/qa/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "resetAll",
+        }),
+      });
+
+      if (res.ok) {
+        toast.success("All decisions reset");
+        setLocalAcceptedFields({});
+        setLocalAcceptedMerges({});
+        fetchResults();
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to reset");
+      }
+    } catch (error) {
+      toast.error("Failed to reset all");
+    } finally {
+      setResettingAll(false);
+    }
+  };
+
   const formatValue = (value: unknown): string => {
     if (value === null || value === undefined) return "-";
     if (typeof value === "object") return JSON.stringify(value);
@@ -526,6 +593,20 @@ export default function QAReviewPage({
               </div>
             </div>
             <div className="flex gap-2">
+              {reviewedCount > 0 && (
+                <Button
+                  variant="outline"
+                  onClick={resetAllDecisions}
+                  disabled={resettingAll}
+                >
+                  {resettingAll ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <RotateCcw className="h-4 w-4 mr-2" />
+                  )}
+                  Reset All ({reviewedCount})
+                </Button>
+              )}
               {qaRun?.status === "completed" && !qaRun?.synthesizedRunId && (
                 <Button
                   onClick={() => setSynthesizeDialogOpen(true)}
@@ -775,6 +856,24 @@ export default function QAReviewPage({
                               <X className="h-4 w-4 mr-1" />
                               Reject All
                             </Button>
+                            {result.status !== "pending_review" && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  resetResult(result.id);
+                                }}
+                                disabled={resettingResultId === result.id}
+                              >
+                                {resettingResultId === result.id ? (
+                                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                ) : (
+                                  <RotateCcw className="h-4 w-4 mr-1" />
+                                )}
+                                Reset
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
                               size="sm"

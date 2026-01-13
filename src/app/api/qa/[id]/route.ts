@@ -222,7 +222,7 @@ export async function DELETE(
     // Update status
     await db
       .update(qaRuns)
-      .set({ status: "failed", completedAt: new Date() })
+      .set({ status: "cancelled", completedAt: new Date() })
       .where(eq(qaRuns.id, id));
 
     return NextResponse.json({

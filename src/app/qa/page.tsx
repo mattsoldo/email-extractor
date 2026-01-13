@@ -36,6 +36,7 @@ import {
   Play,
   AlertTriangle,
   Sparkles,
+  StopCircle,
 } from "lucide-react";
 import {
   Dialog,
@@ -126,6 +127,7 @@ export default function QAPage() {
   const [selectedPrompt, setSelectedPrompt] = useState<string>("");
   const [sampleSize, setSampleSize] = useState<string>("");
   const [creating, setCreating] = useState(false);
+  const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
 
   // Fetch QA runs
   const fetchQaRuns = useCallback(async (isInitialLoad = false) => {
@@ -256,6 +258,27 @@ export default function QAPage() {
     }
   };
 
+  const cancelQaRun = async (runId: string) => {
+    setCancellingRunId(runId);
+    try {
+      const res = await fetch(`/api/qa/${runId}`, {
+        method: "DELETE",
+      });
+
+      if (res.ok) {
+        toast.success("QA run cancelled");
+        fetchQaRuns(false);
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to cancel QA run");
+      }
+    } catch (error) {
+      toast.error("Failed to cancel QA run");
+    } finally {
+      setCancellingRunId(null);
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "completed":
@@ -284,6 +307,13 @@ export default function QAPage() {
           <Badge className="bg-yellow-100 text-yellow-800 gap-1">
             <Clock className="h-3 w-3" />
             Pending
+          </Badge>
+        );
+      case "cancelled":
+        return (
+          <Badge className="bg-gray-100 text-gray-800 gap-1">
+            <StopCircle className="h-3 w-3" />
+            Cancelled
           </Badge>
         );
       default:
@@ -486,6 +516,22 @@ export default function QAPage() {
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-2">
+                              {(run.status === "running" || run.status === "pending") && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => cancelQaRun(run.id)}
+                                  disabled={cancellingRunId === run.id}
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  {cancellingRunId === run.id ? (
+                                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                                  ) : (
+                                    <StopCircle className="h-4 w-4 mr-1" />
+                                  )}
+                                  Cancel
+                                </Button>
+                              )}
                               {run.status === "completed" && (
                                 <Link href={`/qa/${run.id}`}>
                                   <Button variant="outline" size="sm">

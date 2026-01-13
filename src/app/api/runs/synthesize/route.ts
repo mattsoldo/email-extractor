@@ -128,17 +128,19 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
     }
   }
 
-  // Get all emails with their winner designations
+  // Get all emails with their winner designations and field overrides
   const allEmailIds = new Set([...byEmailA.keys(), ...byEmailB.keys()]);
   const emailList = await db
     .select({
       id: emails.id,
       winnerTransactionId: emails.winnerTransactionId,
+      fieldOverrides: emails.fieldOverrides,
     })
     .from(emails)
     .where(inArray(emails.id, Array.from(allEmailIds)));
 
   const emailWinners = new Map(emailList.map((e) => [e.id, e.winnerTransactionId]));
+  const emailOverrides = new Map(emailList.map((e) => [e.id, e.fieldOverrides as Record<string, unknown> | null]));
 
   // Get next version number for this set
   const maxVersionResult = await db
@@ -181,10 +183,36 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
     return merged;
   };
 
+  // Helper to apply field overrides to a transaction object
+  const applyFieldOverrides = (
+    txn: typeof transactions.$inferInsert,
+    overrides: Record<string, unknown> | null
+  ): typeof transactions.$inferInsert => {
+    if (!overrides) return txn;
+
+    const result = { ...txn };
+    for (const [key, value] of Object.entries(overrides)) {
+      // Handle data.* keys (for additional data fields)
+      if (key.startsWith("data.")) {
+        const dataKey = key.substring(5);
+        result.data = {
+          ...(result.data as Record<string, unknown> || {}),
+          [dataKey]: value,
+        };
+      } else if (key in result) {
+        // Direct field override - cast appropriately
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (result as any)[key] = value;
+      }
+    }
+    return result;
+  };
+
   for (const emailId of allEmailIds) {
     const tA = byEmailA.get(emailId);
     const tB = byEmailB.get(emailId);
     const winner = emailWinners.get(emailId);
+    const overrides = emailOverrides.get(emailId);
 
     let winnerTransaction: typeof transactions.$inferSelect | null = null;
     let loserTransaction: typeof transactions.$inferSelect | null = null;
@@ -224,7 +252,7 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
       const w = winnerTransaction;
       const l = loserTransaction;
 
-      transactionsToCreate.push({
+      const baseTransaction: typeof transactions.$inferInsert = {
         id: newTransactionId,
         type: w.type, // Type always from winner
         accountId: !isEmpty(w.accountId) ? w.accountId : l?.accountId || null,
@@ -275,7 +303,11 @@ async function handleComparisonWinners(params: ComparisonWinnersParams) {
         confidence: w.confidence, // Confidence from winner
         llmModel: w.llmModel, // Model from winner
         sourceTransactionId: w.id, // Track provenance (winner's ID)
-      });
+      };
+
+      // Apply any user field overrides (these take highest precedence)
+      const finalTransaction = applyFieldOverrides(baseTransaction, overrides || null);
+      transactionsToCreate.push(finalTransaction);
     }
   }
 

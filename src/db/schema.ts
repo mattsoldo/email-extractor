@@ -158,6 +158,7 @@ export const emails = pgTable("emails", {
   skipReason: text("skip_reason"), // Why email was skipped (e.g., "marketing")
   informationalNotes: text("informational_notes"), // AI explanation for non-transactional emails
   winnerTransactionId: text("winner_transaction_id"), // User-selected canonical transaction
+  fieldOverrides: jsonb("field_overrides").$type<Record<string, unknown>>(), // User-edited field values for synthesis
   createdAt: timestamp("created_at").defaultNow().notNull(),
   processedAt: timestamp("processed_at"),
 });

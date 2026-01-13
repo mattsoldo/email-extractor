@@ -46,6 +46,9 @@ import {
   Layers,
   ExternalLink,
   Sparkles,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
@@ -103,6 +106,7 @@ interface TransactionComparison {
   differences: string[];
   dataKeyDifferences: string[];
   winnerTransactionId: string | null;
+  fieldOverrides: Record<string, unknown> | null;
 }
 
 interface ComparisonSummary {
@@ -150,6 +154,12 @@ function ComparePageContent() {
   const [synthesizePrimaryRun, setSynthesizePrimaryRun] = useState<"a" | "b">("a");
   const [synthesizeName, setSynthesizeName] = useState("");
   const [synthesizing, setSynthesizing] = useState(false);
+
+  // Field editing state
+  // Key format: `${emailId}:${fieldName}` for tracking which field is being edited
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState<string>("");
+  const [savingOverride, setSavingOverride] = useState(false);
 
   const fetchRuns = useCallback(async () => {
     try {
@@ -202,6 +212,28 @@ function ComparePageContent() {
     "price", "executionPrice", "limitPrice", "fees",
     "orderQuantity", "orderPrice", "contractSize"
   ]);
+
+  // Helper to check if a value is empty (null, undefined, or empty string)
+  const isEmptyValue = (val: unknown): boolean => {
+    return val === null || val === undefined || val === "";
+  };
+
+  // Helper to check if an item has a "real" numeric difference (both values exist)
+  const hasRealNumericDiff = (item: TransactionComparison, fieldName: string): boolean => {
+    if (!item.differences.includes(fieldName)) return false;
+    if (!NUMERIC_FIELDS.has(fieldName)) return false;
+
+    const valA = item.runATransaction?.[fieldName as keyof Transaction];
+    const valB = item.runBTransaction?.[fieldName as keyof Transaction];
+
+    // Only count as a numeric difference if both sides have a value
+    return !isEmptyValue(valA) && !isEmptyValue(valB);
+  };
+
+  // Get all real numeric differences for an item
+  const getRealNumericDiffs = (item: TransactionComparison): string[] => {
+    return item.differences.filter(d => hasRealNumericDiff(item, d));
+  };
 
   // Interface for grouped differences
   interface DifferenceGroup {
@@ -263,8 +295,8 @@ function ComparePageContent() {
         });
       }
 
-      // Check if this item has numeric field differences
-      const numericDiffs = item.differences.filter(d => NUMERIC_FIELDS.has(d));
+      // Check if this item has real numeric field differences (both values exist)
+      const numericDiffs = getRealNumericDiffs(item);
       if (numericDiffs.length > 0) {
         const group = patternMap.get(pattern)!;
         group.hasNumericDifferences = true;
@@ -455,6 +487,54 @@ function ComparePageContent() {
     }
   };
 
+  const saveFieldOverride = async (emailId: string, fieldName: string, value: string) => {
+    setSavingOverride(true);
+    try {
+      // Convert value to appropriate type
+      let parsedValue: unknown = value;
+      // Try to parse as number if it looks like one
+      if (/^-?\d*\.?\d+$/.test(value.trim())) {
+        parsedValue = value.trim();
+      }
+      // Empty string means clear the override
+      if (value.trim() === "") {
+        parsedValue = null;
+      }
+
+      const res = await fetch("/api/compare", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          emailId,
+          fieldOverrides: { [fieldName]: parsedValue },
+        }),
+      });
+
+      if (res.ok) {
+        toast.success("Field override saved");
+        setEditingField(null);
+        fetchComparison(true); // Preserve expanded state
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to save override");
+      }
+    } catch (error) {
+      toast.error("Failed to save override");
+    } finally {
+      setSavingOverride(false);
+    }
+  };
+
+  const startEditingField = (emailId: string, fieldName: string, currentValue: unknown) => {
+    setEditingField(`${emailId}:${fieldName}`);
+    setEditingValue(currentValue === null || currentValue === undefined ? "" : String(currentValue));
+  };
+
+  const cancelEditing = () => {
+    setEditingField(null);
+    setEditingValue("");
+  };
+
   const toggleEmailPreview = async (emailId: string) => {
     if (expandedEmailPreviews.has(emailId)) {
       setExpandedEmailPreviews((prev) => {
@@ -619,23 +699,107 @@ function ComparePageContent() {
     label: string,
     valueA: unknown,
     valueB: unknown,
-    isDifferent: boolean
+    isDifferent: boolean,
+    editOptions?: {
+      emailId: string;
+      fieldName: string;
+      fieldOverrides: Record<string, unknown> | null;
+    }
   ) => {
     const formattedA = formatValue(valueA);
     const formattedB = formatValue(valueB);
 
+    // Check if this field has an override
+    const hasOverride = editOptions?.fieldOverrides && editOptions.fieldName in editOptions.fieldOverrides;
+    const overrideValue = hasOverride ? editOptions!.fieldOverrides![editOptions!.fieldName] : null;
+
+    // Check if we're currently editing this field
+    const isEditing = editOptions && editingField === `${editOptions.emailId}:${editOptions.fieldName}`;
+
     return (
       <div
-        className={`grid grid-cols-3 gap-4 py-2 px-3 rounded ${
+        className={`grid grid-cols-3 gap-4 py-2 px-3 rounded group ${
           isDifferent ? "bg-yellow-50 border border-yellow-200" : ""
-        }`}
+        } ${hasOverride ? "bg-green-50 border border-green-200" : ""}`}
       >
-        <div className="text-sm font-medium text-gray-600">{label}</div>
+        <div className="text-sm font-medium text-gray-600 flex items-center gap-1">
+          {label}
+          {hasOverride && (
+            <Badge variant="secondary" className="bg-green-100 text-green-800 text-xs px-1 py-0">
+              edited
+            </Badge>
+          )}
+        </div>
         <div className={`text-sm ${isDifferent ? "font-semibold text-blue-700" : "text-gray-900"}`}>
           {formattedA}
         </div>
-        <div className={`text-sm ${isDifferent ? "font-semibold text-purple-700" : "text-gray-900"}`}>
-          {formattedB}
+        <div className={`text-sm ${isDifferent ? "font-semibold text-purple-700" : "text-gray-900"} flex items-center gap-2`}>
+          {isEditing ? (
+            <div className="flex items-center gap-1 flex-1">
+              <Input
+                value={editingValue}
+                onChange={(e) => setEditingValue(e.target.value)}
+                className="h-7 text-sm"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    saveFieldOverride(editOptions!.emailId, editOptions!.fieldName, editingValue);
+                  } else if (e.key === "Escape") {
+                    cancelEditing();
+                  }
+                }}
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 w-7 p-0 text-green-600 hover:text-green-700 hover:bg-green-50"
+                onClick={() => saveFieldOverride(editOptions!.emailId, editOptions!.fieldName, editingValue)}
+                disabled={savingOverride}
+              >
+                {savingOverride ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 w-7 p-0 text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                onClick={cancelEditing}
+                disabled={savingOverride}
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ) : (
+            <>
+              <span className="flex-1">
+                {hasOverride ? (
+                  <span className="text-green-700 font-semibold" title={`Override: ${formatValue(overrideValue)}`}>
+                    {formatValue(overrideValue)}
+                    <span className="text-gray-400 font-normal line-through ml-2 text-xs">
+                      {formattedB}
+                    </span>
+                  </span>
+                ) : (
+                  formattedB
+                )}
+              </span>
+              {editOptions && isDifferent && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 w-6 p-0 text-gray-400 hover:text-gray-600 hover:bg-gray-100 opacity-0 group-hover:opacity-100 transition-opacity"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // Start editing with the value we want to override (or override value if exists)
+                    const startValue = hasOverride ? overrideValue : valueB;
+                    startEditingField(editOptions.emailId, editOptions.fieldName, startValue);
+                  }}
+                  title="Edit value for synthesis"
+                >
+                  <Pencil className="h-3 w-3" />
+                </Button>
+              )}
+            </>
+          )}
         </div>
       </div>
     );
@@ -746,43 +910,50 @@ function ComparePageContent() {
                 "Type",
                 item.runATransaction?.type,
                 item.runBTransaction?.type,
-                item.differences.includes("type")
+                item.differences.includes("type"),
+                { emailId: item.emailId, fieldName: "type", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Amount",
                 item.runATransaction?.amount,
                 item.runBTransaction?.amount,
-                item.differences.includes("amount")
+                item.differences.includes("amount"),
+                { emailId: item.emailId, fieldName: "amount", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Currency",
                 item.runATransaction?.currency,
                 item.runBTransaction?.currency,
-                item.differences.includes("currency")
+                item.differences.includes("currency"),
+                { emailId: item.emailId, fieldName: "currency", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Description",
                 item.runATransaction?.description,
                 item.runBTransaction?.description,
-                item.differences.includes("description")
+                item.differences.includes("description"),
+                { emailId: item.emailId, fieldName: "description", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Symbol",
                 item.runATransaction?.symbol,
                 item.runBTransaction?.symbol,
-                item.differences.includes("symbol")
+                item.differences.includes("symbol"),
+                { emailId: item.emailId, fieldName: "symbol", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Category",
                 item.runATransaction?.category,
                 item.runBTransaction?.category,
-                item.differences.includes("category")
+                item.differences.includes("category"),
+                { emailId: item.emailId, fieldName: "category", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Date",
                 item.runATransaction?.date,
                 item.runBTransaction?.date,
-                item.differences.includes("date")
+                item.differences.includes("date"),
+                { emailId: item.emailId, fieldName: "date", fieldOverrides: item.fieldOverrides }
               )}
 
               {/* Quantity fields */}
@@ -790,19 +961,22 @@ function ComparePageContent() {
                 "Quantity",
                 item.runATransaction?.quantity,
                 item.runBTransaction?.quantity,
-                item.differences.includes("quantity")
+                item.differences.includes("quantity"),
+                { emailId: item.emailId, fieldName: "quantity", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Qty Executed",
                 item.runATransaction?.quantityExecuted,
                 item.runBTransaction?.quantityExecuted,
-                item.differences.includes("quantityExecuted")
+                item.differences.includes("quantityExecuted"),
+                { emailId: item.emailId, fieldName: "quantityExecuted", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Qty Remaining",
                 item.runATransaction?.quantityRemaining,
                 item.runBTransaction?.quantityRemaining,
-                item.differences.includes("quantityRemaining")
+                item.differences.includes("quantityRemaining"),
+                { emailId: item.emailId, fieldName: "quantityRemaining", fieldOverrides: item.fieldOverrides }
               )}
 
               {/* Price fields */}
@@ -810,31 +984,36 @@ function ComparePageContent() {
                 "Price",
                 item.runATransaction?.price,
                 item.runBTransaction?.price,
-                item.differences.includes("price")
+                item.differences.includes("price"),
+                { emailId: item.emailId, fieldName: "price", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Execution Price",
                 item.runATransaction?.executionPrice,
                 item.runBTransaction?.executionPrice,
-                item.differences.includes("executionPrice")
+                item.differences.includes("executionPrice"),
+                { emailId: item.emailId, fieldName: "executionPrice", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Price Type",
                 item.runATransaction?.priceType,
                 item.runBTransaction?.priceType,
-                item.differences.includes("priceType")
+                item.differences.includes("priceType"),
+                { emailId: item.emailId, fieldName: "priceType", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Limit Price",
                 item.runATransaction?.limitPrice,
                 item.runBTransaction?.limitPrice,
-                item.differences.includes("limitPrice")
+                item.differences.includes("limitPrice"),
+                { emailId: item.emailId, fieldName: "limitPrice", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Fees",
                 item.runATransaction?.fees,
                 item.runBTransaction?.fees,
-                item.differences.includes("fees")
+                item.differences.includes("fees"),
+                { emailId: item.emailId, fieldName: "fees", fieldOverrides: item.fieldOverrides }
               )}
 
               {/* Options fields */}
@@ -842,7 +1021,8 @@ function ComparePageContent() {
                 "Contract Size",
                 item.runATransaction?.contractSize,
                 item.runBTransaction?.contractSize,
-                item.differences.includes("contractSize")
+                item.differences.includes("contractSize"),
+                { emailId: item.emailId, fieldName: "contractSize", fieldOverrides: item.fieldOverrides }
               )}
 
               {/* Order tracking fields */}
@@ -850,55 +1030,64 @@ function ComparePageContent() {
                 "Order ID",
                 item.runATransaction?.orderId,
                 item.runBTransaction?.orderId,
-                item.differences.includes("orderId")
+                item.differences.includes("orderId"),
+                { emailId: item.emailId, fieldName: "orderId", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Order Type",
                 item.runATransaction?.orderType,
                 item.runBTransaction?.orderType,
-                item.differences.includes("orderType")
+                item.differences.includes("orderType"),
+                { emailId: item.emailId, fieldName: "orderType", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Order Quantity",
                 item.runATransaction?.orderQuantity,
                 item.runBTransaction?.orderQuantity,
-                item.differences.includes("orderQuantity")
+                item.differences.includes("orderQuantity"),
+                { emailId: item.emailId, fieldName: "orderQuantity", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Order Price",
                 item.runATransaction?.orderPrice,
                 item.runBTransaction?.orderPrice,
-                item.differences.includes("orderPrice")
+                item.differences.includes("orderPrice"),
+                { emailId: item.emailId, fieldName: "orderPrice", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Order Status",
                 item.runATransaction?.orderStatus,
                 item.runBTransaction?.orderStatus,
-                item.differences.includes("orderStatus")
+                item.differences.includes("orderStatus"),
+                { emailId: item.emailId, fieldName: "orderStatus", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Time in Force",
                 item.runATransaction?.timeInForce,
                 item.runBTransaction?.timeInForce,
-                item.differences.includes("timeInForce")
+                item.differences.includes("timeInForce"),
+                { emailId: item.emailId, fieldName: "timeInForce", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Reference #",
                 item.runATransaction?.referenceNumber,
                 item.runBTransaction?.referenceNumber,
-                item.differences.includes("referenceNumber")
+                item.differences.includes("referenceNumber"),
+                { emailId: item.emailId, fieldName: "referenceNumber", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Partially Executed",
                 item.runATransaction?.partiallyExecuted ? "Yes" : item.runATransaction?.partiallyExecuted === false ? "No" : null,
                 item.runBTransaction?.partiallyExecuted ? "Yes" : item.runBTransaction?.partiallyExecuted === false ? "No" : null,
-                item.differences.includes("partiallyExecuted")
+                item.differences.includes("partiallyExecuted"),
+                { emailId: item.emailId, fieldName: "partiallyExecuted", fieldOverrides: item.fieldOverrides }
               )}
               {renderTransactionDetail(
                 "Execution Time",
                 item.runATransaction?.executionTime,
                 item.runBTransaction?.executionTime,
-                item.differences.includes("executionTime")
+                item.differences.includes("executionTime"),
+                { emailId: item.emailId, fieldName: "executionTime", fieldOverrides: item.fieldOverrides }
               )}
 
               {/* Confidence - never flagged as different */}
@@ -952,7 +1141,8 @@ function ComparePageContent() {
                         key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase()).trim(),
                         flatA[key],
                         flatB[key],
-                        item.dataKeyDifferences?.includes(key) || false
+                        item.dataKeyDifferences?.includes(key) || false,
+                        { emailId: item.emailId, fieldName: `data.${key}`, fieldOverrides: item.fieldOverrides }
                       )
                     )}
                   </>
@@ -1354,21 +1544,21 @@ function ComparePageContent() {
                                 const splitGroups: DifferenceGroup[] = [];
 
                                 for (const group of patterns.values()) {
-                                  // Separate items with numeric differences from those without
+                                  // Separate items with real numeric differences (both values exist) from those without
                                   const itemsWithNumeric = group.items.filter(item =>
-                                    item.differences.some(d => NUMERIC_FIELDS.has(d))
+                                    getRealNumericDiffs(item).length > 0
                                   );
                                   const itemsWithoutNumeric = group.items.filter(item =>
-                                    !item.differences.some(d => NUMERIC_FIELDS.has(d))
+                                    getRealNumericDiffs(item).length === 0
                                   );
 
                                   // Create group for items with numeric differences
                                   if (itemsWithNumeric.length > 0) {
-                                    // Collect all numeric diff fields from these items
+                                    // Collect all real numeric diff fields from these items
                                     const numericFields = new Set<string>();
                                     for (const item of itemsWithNumeric) {
-                                      for (const d of item.differences) {
-                                        if (NUMERIC_FIELDS.has(d)) numericFields.add(d);
+                                      for (const d of getRealNumericDiffs(item)) {
+                                        numericFields.add(d);
                                       }
                                     }
                                     splitGroups.push({

@@ -12,6 +12,7 @@ interface TransactionComparison {
   differences: string[];
   dataKeyDifferences: string[]; // Keys from the data field that differ
   winnerTransactionId: string | null; // The email's current winner
+  fieldOverrides: Record<string, unknown> | null; // User-edited field values for synthesis
 }
 
 // Fields to compare between transactions (excluding confidence per user request)
@@ -215,12 +216,13 @@ export async function GET(request: NextRequest) {
     // Get all unique email IDs
     const allEmailIds = new Set([...byEmailA.keys(), ...byEmailB.keys()]);
 
-    // Fetch email info including winnerTransactionId
+    // Fetch email info including winnerTransactionId and fieldOverrides
     const emailList = await db
       .select({
         id: emails.id,
         subject: emails.subject,
         winnerTransactionId: emails.winnerTransactionId,
+        fieldOverrides: emails.fieldOverrides,
       })
       .from(emails)
       .where(inArray(emails.id, Array.from(allEmailIds)));
@@ -245,6 +247,7 @@ export async function GET(request: NextRequest) {
         differences,
         dataKeyDifferences,
         winnerTransactionId: emailInfo?.winnerTransactionId || null,
+        fieldOverrides: (emailInfo?.fieldOverrides as Record<string, unknown>) || null,
       });
     }
 
@@ -408,6 +411,67 @@ export async function PUT(request: NextRequest) {
     console.error("Bulk set winner error:", error);
     return NextResponse.json(
       { error: "Failed to bulk set winners" },
+      { status: 500 }
+    );
+  }
+}
+
+// PATCH /api/compare - Update field overrides for an email
+export async function PATCH(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { emailId, fieldOverrides } = body as {
+      emailId: string;
+      fieldOverrides: Record<string, unknown>;
+    };
+
+    if (!emailId) {
+      return NextResponse.json(
+        { error: "emailId is required" },
+        { status: 400 }
+      );
+    }
+
+    // Validate email exists
+    const email = await db
+      .select({ id: emails.id, fieldOverrides: emails.fieldOverrides })
+      .from(emails)
+      .where(eq(emails.id, emailId))
+      .limit(1);
+
+    if (email.length === 0) {
+      return NextResponse.json(
+        { error: "Email not found" },
+        { status: 404 }
+      );
+    }
+
+    // Merge with existing overrides (so we can update individual fields)
+    const existingOverrides = (email[0].fieldOverrides || {}) as Record<string, unknown>;
+    const mergedOverrides = { ...existingOverrides, ...fieldOverrides };
+
+    // Remove null/undefined values (to allow clearing overrides)
+    for (const key of Object.keys(mergedOverrides)) {
+      if (mergedOverrides[key] === null || mergedOverrides[key] === undefined) {
+        delete mergedOverrides[key];
+      }
+    }
+
+    // Update the email's field overrides
+    await db
+      .update(emails)
+      .set({ fieldOverrides: Object.keys(mergedOverrides).length > 0 ? mergedOverrides : null })
+      .where(eq(emails.id, emailId));
+
+    return NextResponse.json({
+      message: "Field overrides updated",
+      emailId,
+      fieldOverrides: mergedOverrides,
+    });
+  } catch (error) {
+    console.error("Update field overrides error:", error);
+    return NextResponse.json(
+      { error: "Failed to update field overrides" },
       { status: 500 }
     );
   }
